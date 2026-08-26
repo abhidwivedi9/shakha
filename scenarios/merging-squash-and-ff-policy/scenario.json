@@ -1,0 +1,115 @@
+{
+  "id": "merging-squash-and-ff-policy",
+  "title": "Squash, merge commit, or fast-forward: pick your history shape",
+  "category": "merging",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "The same branch, integrated three different ways. See exactly what each one does to history, and why --squash breaks the 'is it merged' question.",
+  "concepts": ["--squash", "--no-ff", "--ff-only", "merge.ff config", "branch --merged after a squash"],
+  "mental_model": "Merge commit keeps the branch's commits and records the join. Fast-forward keeps the commits and records nothing. Squash keeps neither — it makes one new commit with the same content and no link to the branch at all.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/dosing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "wip dosing" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "calibrate" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.35\n" } },
+    { "commit": { "message": "validate input" } },
+    { "run": "git switch -q main" },
+    { "run": "git branch -q squash-demo main" },
+    { "run": "git branch -q ff-demo main" }
+  ],
+  "steps": [
+    {
+      "title": "Look at the branch you are about to integrate",
+      "why": "Three commits, two of which say nothing useful. How you integrate this decides what a reader sees in six months.",
+      "commands": ["git log --oneline --graph --all --decorate", "git log --oneline main..feature/dosing"]
+    },
+    {
+      "title": "Fast-forward: keep every commit, record nothing",
+      "why": "main has not moved, so git slides the pointer. All three commits — 'wip dosing' included — land verbatim on main, and nothing marks them as having been a branch.",
+      "commands": ["git switch ff-demo", "git merge --ff-only feature/dosing", "git log --oneline --graph"],
+      "expect": "A straight line of four commits, no merge commit."
+    },
+    {
+      "title": "Merge commit: keep every commit and the join",
+      "why": "`--no-ff` forces a merge commit even when a fast-forward is possible. The three commits are preserved AND the branch structure is visible forever — which `--first-parent` can then collapse when reading.",
+      "commands": ["git switch main", "git merge --no-ff -m \"Merge dosing feature\" feature/dosing", "git log --oneline --graph", "git log --oneline --first-parent"],
+      "expect": "Full graph shows five commits; first-parent shows two.",
+      "verify": [
+        { "cmd": "git rev-list --parents -n 1 main", "matches": "^\\S+ \\S+ \\S+$",
+          "label": "main's tip is a merge commit" }
+      ]
+    },
+    {
+      "title": "Squash: one new commit, no link at all",
+      "why": "`--squash` stages the combined result and stops. Nothing is committed and no merge is recorded — you write the commit yourself, and it has exactly one parent.",
+      "commands": ["git switch squash-demo", "git merge --squash feature/dosing", "git status --short", "git log --oneline"],
+      "expect": "Changes staged, no commit yet, and no MERGE_HEAD."
+    },
+    {
+      "title": "Write the commit the squash left to you",
+      "why": "This is the moment squash earns its keep: three throwaway messages become one message that explains the change. The content is identical to the merge; the history is not.",
+      "commands": ["git commit -m \"Add dosing with validation and calibrated rate\"", "git log --oneline --graph", "cat dosing.py"],
+      "verify": [
+        { "cmd": "git log --oneline squash-demo", "lines": 2,
+          "label": "the whole branch became one commit" },
+        { "cmd": "git rev-list --parents -n 1 squash-demo", "matches": "^\\S+ \\S+$",
+          "label": "…with a single parent — no merge was recorded" }
+      ]
+    },
+    {
+      "title": "The cost of squashing",
+      "why": "`branch --merged` does not list feature/dosing for the squash branch, because no commit of it is reachable. Git will happily offer to merge it again, and deleting it looks like losing work.",
+      "commands": ["git branch --merged squash-demo", "git switch main", "git branch --merged main"],
+      "expect": "main lists feature/dosing as merged. squash-demo does not, despite having identical content.",
+      "verify": [
+        { "cmd": "git branch --merged main", "contains": "feature/dosing",
+          "label": "the real merge is detectable as merged" }
+      ]
+    },
+    {
+      "title": "Set a policy rather than deciding each time",
+      "why": "`merge.ff false` makes every merge create a merge commit; `--ff-only` on pull refuses to create accidental merges. Teams that pick one and configure it argue about history far less.",
+      "commands": ["git config merge.ff false", "git config pull.ff only", "git config --local --list | cat"],
+      "verify": [
+        { "cmd": "git config --get merge.ff", "equals": "false",
+          "label": "a merge policy is configured", "hint": "git config merge.ff false" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-list --parents -n 1 main", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "main integrated the branch with a real merge commit",
+      "hint": "git merge --no-ff feature/dosing" },
+    { "cmd": "git log --oneline squash-demo", "lines": 2,
+      "label": "squash-demo collapsed the branch into one commit",
+      "hint": "git merge --squash, then commit" },
+    { "cmd": "git log --oneline ff-demo", "lines": 4,
+      "label": "ff-demo took all three commits with no merge commit",
+      "hint": "git merge --ff-only feature/dosing" },
+    { "cmd": "git branch --merged main", "contains": "feature/dosing",
+      "label": "only the true merge makes the branch show as merged" },
+    { "cmd": "git config --get merge.ff", "equals": "false",
+      "label": "a merge policy is set for this repository" }
+  ],
+  "pitfalls": [
+    "After a squash merge, deleting the source branch needs `-D` — git genuinely believes the work is unmerged, and it is right about reachability.",
+    "Squash-merging a long-lived branch and then merging it again later re-applies everything and conflicts badly. Squash only short-lived branches.",
+    "`--squash` does not commit. People run it, see a clean-looking status, switch branches and lose the staged result.",
+    "GitHub's 'Squash and merge' button does exactly this, which is why the branch shows unmerged afterwards and the sha in the PR differs from the sha on main."
+  ],
+  "cheatsheet": [
+    ["git merge --ff-only <branch>", "refuse to create a merge commit"],
+    ["git merge --no-ff <branch>", "always create one"],
+    ["git merge --squash <branch>", "stage the result as one change, do not commit"],
+    ["git config merge.ff false", "make merge commits the default"],
+    ["git config pull.ff only", "refuse accidental merges on pull"],
+    ["git log --oneline --first-parent", "read a merge-heavy history as a straight line"],
+    ["git branch --merged <branch>", "what is genuinely reachable — squashes do not count"]
+  ]
+}

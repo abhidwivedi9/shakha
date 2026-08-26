@@ -1,0 +1,119 @@
+{
+  "id": "merging-modify-delete",
+  "title": "The conflict with no markers: one side deleted the file",
+  "category": "merging",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "You edited a module; someone else deleted it. Git cannot express that as markers inside a file, so it hands you a decision instead — and the wrong choice is silent.",
+  "concepts": ["modify/delete conflict", "add/add conflict", "stage numbers", "git rm during a merge", "git checkout --ours"],
+  "mental_model": "Content conflicts get markers because both sides have text. A modify/delete conflict has no text on one side, so git leaves the file in the tree, marks it conflicted, and waits for you to say 'keep it' or 'delete it'.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "from legacy import migrate\n\nprint('start')\n" } },
+    { "write": { "path": "legacy.py", "content": "def migrate():\n    print('migrating v1 data')\n" } },
+    { "write": { "path": "shared.py", "content": "NAME = 'controller'\n" } },
+    { "commit": { "message": "Add app with legacy migration" } },
+    { "run": "git switch -q -c feature/cleanup" },
+    { "delete": "legacy.py" },
+    { "write": { "path": "app.py", "content": "print('start')\n" } },
+    { "commit": { "message": "Drop the legacy migration path" } },
+    { "write": { "path": "helper.py", "content": "def helper():\n    return 'from cleanup branch'\n" } },
+    { "commit": { "message": "Add helper" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "legacy.py", "content": "def migrate():\n    print('migrating v1 data')\n\n\ndef migrate_v2():\n    print('migrating v2 data')\n" } },
+    { "commit": { "message": "Extend legacy migration for v2 customers" } },
+    { "write": { "path": "helper.py", "content": "def helper():\n    return 'from main'\n" } },
+    { "commit": { "message": "Add a helper on main too" } }
+  ],
+  "steps": [
+    {
+      "title": "See the collision coming",
+      "why": "One branch deleted legacy.py and added helper.py; the other extended legacy.py and added a different helper.py. Two different kinds of conflict in one merge.",
+      "commands": ["git log --oneline --graph --all --decorate", "git diff --stat main...feature/cleanup"]
+    },
+    {
+      "title": "Merge and read the two conflict types",
+      "why": "The messages differ: one says 'deleted in feature/cleanup and modified in HEAD', the other is a normal add/add content conflict. Only the second has markers in the file.",
+      "commands": ["git merge feature/cleanup", "git status", "git status --short"],
+      "expect": "DU or UD for legacy.py, AA for helper.py.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "legacy.py",
+          "label": "the merge is stopped on the deleted file" }
+      ]
+    },
+    {
+      "title": "Look inside — there is nothing to look at",
+      "why": "legacy.py is sitting in your working tree exactly as main had it, with no markers. That is the trap: it looks resolved. If you just `git add` it without thinking, you have silently overruled the deletion.",
+      "commands": ["cat legacy.py", "git diff -- legacy.py"],
+      "expect": "The full file, no markers, no obvious sign of a conflict."
+    },
+    {
+      "title": "Inspect the three stages to see what is missing",
+      "why": "`ls-files -u` shows the unmerged stages: 1 base, 2 ours, 3 theirs. legacy.py has stages 1 and 2 but no stage 3 — proof, in one line, that their side deleted it.",
+      "commands": ["git ls-files -u", "git ls-files -u -- legacy.py"],
+      "expect": "Two rows for legacy.py, three for helper.py."
+    },
+    {
+      "title": "Decide: the deletion was wrong",
+      "why": "main extended the file for v2 customers who still exist, so keeping it is the correct call. `git add` on a modify/delete conflict is how you say 'keep the file'.",
+      "commands": ["git add legacy.py", "git status --short"],
+      "verify": [
+        { "cmd": "git ls-files -u -- legacy.py", "empty": true,
+          "label": "the modify/delete conflict is resolved", "hint": "git add legacy.py to keep it" }
+      ]
+    },
+    {
+      "title": "Resolve the add/add conflict properly",
+      "why": "helper.py exists on both sides with different content, so it does get markers. Combine the two intentions rather than picking one — the usual right answer for an add/add.",
+      "actions": [
+        { "write": { "path": "helper.py", "content": "def helper():\n    return 'from main'\n\n\ndef cleanup_helper():\n    return 'from cleanup branch'\n" } },
+        { "run": "git add helper.py" }
+      ],
+      "commands": ["git status --short", "cat helper.py"]
+    },
+    {
+      "title": "Restore the import the other side removed",
+      "why": "Their commit removed the import along with the file. Keeping the file means the import belongs back — merge resolution is a code review, not a file-picking exercise.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "from legacy import migrate\n\nprint('start')\n" } },
+        { "run": "git add app.py" }
+      ],
+      "commands": ["git commit --no-edit", "git log --oneline --graph -3", "ls"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the merge is committed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "contains": "legacy.py",
+      "label": "the modify/delete conflict was resolved by keeping the file",
+      "hint": "git add legacy.py keeps it; git rm legacy.py would accept the deletion" },
+    { "cmd": "cat legacy.py", "contains": "migrate_v2",
+      "label": "…including the v2 extension that made it worth keeping" },
+    { "cmd": "cat helper.py", "not_contains": ["<<<<<<<", ">>>>>>>"],
+      "label": "the add/add conflict has no leftover markers" },
+    { "cmd": "cat helper.py", "contains": ["from main", "from cleanup branch"],
+      "label": "both sides' helpers survived",
+      "hint": "an add/add conflict usually wants combining, not choosing" },
+    { "cmd": "cat app.py", "contains": "from legacy import migrate",
+      "label": "the import was restored to match the decision to keep the file" },
+    { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "the merge commit exists" }
+  ],
+  "pitfalls": [
+    "A modify/delete conflict leaves an ordinary-looking file on disk. `git add` means keep, `git rm` means accept the deletion — there is no third option and no marker to remind you.",
+    "`git status --short` codes: DU deleted by us, UD deleted by them, AA both added, UU both modified. The letters are the fastest read of what happened.",
+    "Accepting a deletion often leaves imports and callers behind. The compiler catches it in a typed language; in Python it is a runtime error in production.",
+    "`git checkout --ours <file>` does nothing useful on a modify/delete conflict, because one side has no version of the file at all."
+  ],
+  "cheatsheet": [
+    ["git status --short", "DU/UD/AA/UU tell you the conflict type"],
+    ["git ls-files -u", "the unmerged stages: 1 base, 2 ours, 3 theirs"],
+    ["git add <file>", "on modify/delete: keep the file"],
+    ["git rm <file>", "on modify/delete: accept the deletion"],
+    ["git show :2:<file>", "our version during a conflict"],
+    ["git show :3:<file>", "their version"],
+    ["git merge --abort", "start the whole decision over"]
+  ]
+}

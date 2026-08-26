@@ -1,0 +1,108 @@
+{
+  "id": "merging-rerere",
+  "title": "Resolve the same conflict once, not five times",
+  "category": "merging",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "A long-lived branch hits the same conflict on every rebase. Turn on rerere and git replays your resolution automatically, for as long as the conflict keeps coming back.",
+  "concepts": ["rerere.enabled", "conflict fingerprints", "rr-cache", "rerere status/diff", "rerere forget"],
+  "mental_model": "rerere — reuse recorded resolution — fingerprints each conflict by its two sides. When it sees the same fingerprint again, it applies the resolution you gave last time. It resolves the file but deliberately does not stage it, so you still get to look.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "settings.py", "content": "POOL_SIZE = 5\nDEBUG = False\nREGION = 'eu-west-1'\n" } },
+    { "commit": { "message": "Add settings" } },
+    { "run": "git switch -q -c feature/long-running" },
+    { "write": { "path": "settings.py", "content": "POOL_SIZE = 50\nDEBUG = False\nREGION = 'eu-west-1'\n" } },
+    { "commit": { "message": "Raise pool size for the new workload" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "settings.py", "content": "POOL_SIZE = 10\nDEBUG = False\nREGION = 'eu-west-1'\n" } },
+    { "commit": { "message": "Bump pool size modestly" } }
+  ],
+  "steps": [
+    {
+      "title": "Turn on rerere before you need it",
+      "why": "It records nothing retroactively, so switching it on after a painful conflict is too late. This is a config line worth having globally on every machine you use.",
+      "commands": ["git config rerere.enabled true", "git config --get rerere.enabled"],
+      "verify": [
+        { "cmd": "git config --get rerere.enabled", "equals": "true",
+          "label": "rerere is enabled", "hint": "git config rerere.enabled true" }
+      ]
+    },
+    {
+      "title": "Hit the conflict and resolve it by hand — once",
+      "why": "Standard conflict, standard resolution. The difference is the line git prints: 'Recorded preimage for settings.py'. It has fingerprinted the conflict before you touched it.",
+      "commands": ["git merge feature/long-running", "git status --short", "cat settings.py"],
+      "expect": "A conflict, plus a message about recording the preimage."
+    },
+    {
+      "title": "Write the resolution",
+      "why": "50 is what the new workload needs. Committing the merge makes rerere store the resolution against that fingerprint — 'Recorded resolution for settings.py'.",
+      "actions": [
+        { "write": { "path": "settings.py", "content": "POOL_SIZE = 50\nDEBUG = False\nREGION = 'eu-west-1'\n" } },
+        { "run": "git add settings.py" }
+      ],
+      "commands": ["git commit --no-edit", "git rerere status", "ls .git/rr-cache"],
+      "expect": "An entry in .git/rr-cache — the memory that makes the next step work."
+    },
+    {
+      "title": "Undo the merge, as if you had rebased instead",
+      "why": "This simulates the real situation: the merge gets thrown away and the same two sides collide again. On a long-lived branch this happens on every single rebase onto a moving main.",
+      "commands": ["git reset --hard ORIG_HEAD", "git log --oneline", "cat settings.py"],
+      "expect": "Back to main's version, merge gone."
+    },
+    {
+      "title": "Hit the identical conflict again",
+      "why": "This time git says 'Resolved settings.py using previous resolution'. The file already contains 50 — no markers, no thinking, no chance of resolving it differently by accident.",
+      "commands": ["git merge feature/long-running", "cat settings.py", "git status --short"],
+      "expect": "The file is resolved automatically, but still listed as unmerged.",
+      "verify": [
+        { "cmd": "cat settings.py", "contains": "POOL_SIZE = 50",
+          "label": "rerere replayed the resolution automatically",
+          "hint": "the resolution had to be recorded once, with rerere already enabled" },
+        { "cmd": "cat settings.py", "not_contains": "<<<<<<<",
+          "label": "…and left no markers behind" }
+      ]
+    },
+    {
+      "title": "Notice what rerere deliberately did not do",
+      "why": "It resolved the file but left it unstaged. That is intentional: rerere is confident about the mechanics, not about whether the resolution is still correct. You review, then stage.",
+      "commands": ["git status --short", "git rerere diff", "git add settings.py", "git commit --no-edit", "git log --oneline --graph -3"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the merge is committed" }
+      ]
+    },
+    {
+      "title": "Forget a resolution you regret",
+      "why": "If you resolved something wrongly, rerere will keep replaying that mistake. `git rerere forget <path>` drops the recorded answer so the next conflict asks you again.",
+      "commands": ["git rerere status", "git rerere gc"],
+      "expect": "Nothing pending — the cache is tidy."
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get rerere.enabled", "equals": "true",
+      "label": "rerere is enabled in this repository",
+      "hint": "git config rerere.enabled true — ideally --global" },
+    { "cmd": "cat settings.py", "contains": "POOL_SIZE = 50",
+      "label": "the recorded resolution was applied on the second conflict" },
+    { "cmd": "cat settings.py", "not_contains": ["<<<<<<<", ">>>>>>>"],
+      "label": "no markers survived" },
+    { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "the merge is committed" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "rerere replays your previous answer even when the surrounding code has changed underneath it. Review what it staged — it resolves, it does not think.",
+    "It is per-clone and lives in `.git/rr-cache`, so a fresh clone starts with no memory. There is no way to share resolutions between people.",
+    "Enable it before the painful week, not during. Nothing is recorded retroactively.",
+    "`git rerere forget <path>` is the fix for a resolution you got wrong; without it the mistake repeats forever."
+  ],
+  "cheatsheet": [
+    ["git config --global rerere.enabled true", "turn it on everywhere"],
+    ["git rerere status", "which conflicts are being tracked right now"],
+    ["git rerere diff", "what rerere changed in the working file"],
+    ["git rerere forget <path>", "drop a recorded resolution"],
+    ["git rerere gc", "clean up old entries"],
+    ["ls .git/rr-cache", "the recorded resolutions themselves"]
+  ]
+}

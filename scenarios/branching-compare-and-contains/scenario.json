@@ -1,0 +1,108 @@
+{
+  "id": "branching-compare-and-contains",
+  "title": "Which branches contain this fix?",
+  "category": "branching",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 12,
+  "summary": "A security fix landed on main. Three release branches are live. Answer — without guessing — which of them already have it and which still need it.",
+  "concepts": ["branch --contains", "branch --merged", "cherry", "rev-list --count", "for-each-ref"],
+  "mental_model": "'Does branch X have commit C?' is the reachability question, and `branch --contains` answers it exactly. 'Does X have an equivalent change?' is a different question, because cherry-picks and rebases change shas — that one needs `git cherry`.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "auth.py", "content": "def check(token):\n    return len(token) > 0\n" } },
+    { "commit": { "message": "Add auth check" } },
+    { "run": "git switch -q -c release/1.0" },
+    { "write": { "path": "VERSION", "content": "1.0.0\n" } },
+    { "commit": { "message": "Cut release 1.0" } },
+    { "run": "git switch -q main" },
+    { "run": "git switch -q -c release/1.1" },
+    { "write": { "path": "VERSION", "content": "1.1.0\n" } },
+    { "commit": { "message": "Cut release 1.1" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "auth.py", "content": "import hmac\n\n\ndef check(token, expected):\n    return hmac.compare_digest(token, expected)\n" } },
+    { "commit": { "message": "Fix timing attack in auth check" } },
+    { "write": { "path": "README.md", "content": "# Controller\n" } },
+    { "commit": { "message": "Add readme" } }
+  ],
+  "steps": [
+    {
+      "title": "Find the commit you care about",
+      "why": "Start from the fix itself. Every question below is phrased in terms of this sha, so capture it first — by message, not by scrolling.",
+      "commands": ["git log --oneline --all --decorate --graph", "git log -1 --format='%h %s' --grep='timing attack'"]
+    },
+    {
+      "title": "Ask which branches contain it",
+      "why": "`branch --contains <sha>` lists every branch from which that commit is reachable. This is the definitive answer, and it takes a second — far better than diffing files and guessing.",
+      "commands": ["sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"timing attack\")'", "sh -c 'git branch --no-contains $(git log -1 --format=%H --grep=\"timing attack\")'"],
+      "expect": "main contains it; both release branches do not.",
+      "verify": [
+        { "cmd": "sh -c 'git branch --no-contains $(git log -1 --format=%H --grep=\"timing attack\") | wc -l'",
+          "equals": "2", "label": "two release branches are missing the fix" }
+      ]
+    },
+    {
+      "title": "Backport it to one release",
+      "why": "`cherry-pick` copies the change onto another branch as a new commit with a different sha. The content is the same; the identity is not — which is what makes the next step interesting.",
+      "commands": ["git switch release/1.1", "sh -c 'git cherry-pick $(git log -1 --format=%H --grep=\"timing attack\" main)'", "git log --oneline -2", "cat auth.py"],
+      "verify": [
+        { "cmd": "git log --oneline release/1.1", "contains": "timing attack",
+          "label": "the fix is on release/1.1", "hint": "git cherry-pick <sha>" }
+      ]
+    },
+    {
+      "title": "Watch --contains give the wrong impression",
+      "why": "The cherry-picked commit has a different sha, so `--contains` still says release/1.1 does not contain the original. Reachability is about identity, not content — the single most misread result in this area.",
+      "commands": ["sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"timing attack\" main)'"],
+      "expect": "Still only main, even though release/1.1 now has the identical change."
+    },
+    {
+      "title": "Ask the content question instead",
+      "why": "`git cherry <upstream> <head>` compares patches rather than shas. A `-` means 'this commit has an equivalent on the other side'; a `+` means it is genuinely missing. This is the right tool for backport auditing.",
+      "commands": ["git cherry -v main release/1.1", "git cherry -v main release/1.0"],
+      "expect": "The fix is marked `-` on release/1.1 — main already has an equivalent. The 'Cut release' commits are marked `+`, because those really are unique to the release branches."
+    },
+    {
+      "title": "Count how far behind each branch is",
+      "why": "`rev-list --left-right --count` prints two numbers: commits unique to each side. It is the machine-readable version of 'ahead 3, behind 7' and belongs in any release dashboard.",
+      "commands": ["git rev-list --left-right --count main...release/1.0", "git rev-list --left-right --count main...release/1.1"]
+    },
+    {
+      "title": "Audit every branch at once",
+      "why": "`for-each-ref` with a format string turns branch state into a table. This is the query you script when 'which branches need the patch' has to be answered weekly rather than once.",
+      "commands": ["git for-each-ref --format='%(refname:short) %(objectname:short) %(committerdate:relative)' refs/heads", "sh -c 'for b in $(git for-each-ref --format=\"%(refname:short)\" refs/heads); do echo \"$b: $(git cherry main $b | grep -c \"^+\") commits not in main\"; done'"],
+      "verify": [
+        { "cmd": "git for-each-ref --format=%(refname:short) refs/heads", "lines": 3,
+          "label": "all three branches are visible to the audit" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline release/1.1", "contains": "timing attack",
+      "label": "release/1.1 was backported",
+      "hint": "git cherry-pick the fix onto release/1.1" },
+    { "cmd": "git log --oneline release/1.0", "not_contains": "timing attack",
+      "label": "release/1.0 was deliberately left alone — it is the branch still needing attention" },
+    { "cmd": "git cherry -v main release/1.1", "matches": "^- .*timing attack",
+      "label": "git cherry marks the backported fix as already present, despite the different sha",
+      "hint": "cherry compares patch ids, not shas — that is why it sees the backport" },
+    { "cmd": "sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"timing attack\" main) | wc -l'",
+      "equals": "1",
+      "label": "…while --contains still lists only main, because the sha differs" }
+  ],
+  "pitfalls": [
+    "`--contains` answers reachability, not 'has this change'. After a cherry-pick or rebase the shas differ and the answer looks wrong.",
+    "`git cherry` compares patch ids, so it survives cherry-picks and rebases — but a conflict resolved differently on the other branch breaks the match.",
+    "`branch --merged` without an argument uses HEAD, so the answer changes depending on which branch you are standing on. Always name the branch explicitly.",
+    "Remote branches need `-r` or `-a`. `git branch --contains <sha>` alone will not mention origin's branches at all."
+  ],
+  "cheatsheet": [
+    ["git branch --contains <sha>", "branches from which the commit is reachable"],
+    ["git branch --no-contains <sha>", "branches missing it"],
+    ["git branch -a --contains <sha>", "…including remote branches"],
+    ["git cherry -v <upstream> <head>", "+ missing, - already there by content"],
+    ["git rev-list --left-right --count A...B", "ahead/behind as two numbers"],
+    ["git for-each-ref --format=... refs/heads", "scriptable branch table"],
+    ["git tag --contains <sha>", "which releases shipped this commit"]
+  ]
+}

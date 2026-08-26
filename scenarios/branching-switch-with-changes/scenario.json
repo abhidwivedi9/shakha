@@ -1,0 +1,108 @@
+{
+  "id": "branching-switch-with-changes",
+  "title": "Switching branches with uncommitted work: carried, blocked, or stashed",
+  "category": "branching",
+  "level": "intermediate",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "Sometimes git carries your edits to the new branch. Sometimes it refuses point-blank. Learn which happens when, and the three ways out.",
+  "concepts": ["dirty working tree", "switch refusal", "stash", "switch -m", "WIP commit"],
+  "mental_model": "Uncommitted changes live outside any branch. Git carries them across a switch when the file is identical on both branches, and refuses when switching would have to overwrite your edit. The refusal is protection, not an obstacle.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add app and pump" } },
+    { "run": "git switch -q -c feature/pump-tuning" },
+    { "write": { "path": "pump.py", "content": "RPM = 1800\nRAMP_SECONDS = 5\n" } },
+    { "commit": { "message": "Tune the pump for the new impeller" } },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "Edit a file that is the same on both branches",
+      "why": "app.py is identical on main and the feature branch, so nothing about switching would need to overwrite your edit.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "print('reef controller v2')\n" } }
+      ],
+      "commands": ["git status --short", "git switch feature/pump-tuning", "git status --short", "cat app.py"],
+      "expect": "The switch succeeds and your edit came with you. Uncommitted work belongs to you, not to a branch."
+    },
+    {
+      "title": "Go back, and now edit a file that differs",
+      "why": "pump.py has different content on each branch. Editing it on main creates a genuine conflict of interest: switching would have to throw your edit away to install the branch's version.",
+      "actions": [
+        { "run": "git switch -q main" },
+        { "write": { "path": "pump.py", "content": "RPM = 1400\n" } }
+      ],
+      "commands": ["git status --short", "git switch feature/pump-tuning"],
+      "expect": "error: Your local changes would be overwritten. Exit code 1 — git just saved your work."
+    },
+    {
+      "title": "Way out 1 — stash it",
+      "why": "Stash takes your uncommitted changes off the working tree and records them separately. The tree becomes clean, the switch succeeds, and your edit is retrievable at any time.",
+      "commands": ["git stash push -m \"wip: pump rpm experiment\"", "git status --short", "git switch feature/pump-tuning", "git stash list"],
+      "expect": "Clean tree, successful switch, one entry in the stash list.",
+      "verify": [
+        { "cmd": "git stash list", "not_empty": true, "label": "the work is safely stashed" },
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/pump-tuning",
+          "label": "and the switch went through" }
+      ]
+    },
+    {
+      "title": "Get it back on the branch where it belongs",
+      "why": "Stashes are not tied to a branch — you can pop one anywhere. Here we go back to main and restore it, which is the common case: you stashed only to move, not to abandon.",
+      "commands": ["git switch main", "git stash pop", "git status --short", "cat pump.py"],
+      "expect": "RPM = 1400 is back on main, and the stash list is empty."
+    },
+    {
+      "title": "Way out 2 — commit it, even roughly",
+      "why": "A WIP commit is cheap and completely reversible with `reset --soft`. On a branch nobody else pulls, this is often better than stashing: it survives crashes and shows up in the reflog.",
+      "commands": ["git commit -a -m \"WIP: testing 1400 RPM\"", "git switch feature/pump-tuning", "git switch main", "git log --oneline -1"],
+      "expect": "The switch is now trivial, because there is nothing uncommitted."
+    },
+    {
+      "title": "Undo the WIP commit, keeping the work",
+      "why": "`reset --soft HEAD~1` removes the commit and leaves everything staged. This is the standard pattern: commit to move safely, then unwind the commit when you are ready to do the work properly.",
+      "commands": ["git reset --soft HEAD~1", "git status --short", "cat pump.py"],
+      "verify": [
+        { "cmd": "git log --oneline main", "not_contains": "WIP",
+          "label": "the WIP commit is gone but the change survives",
+          "hint": "git reset --soft HEAD~1" }
+      ]
+    },
+    {
+      "title": "Way out 3 — take the changes with you deliberately",
+      "why": "`switch -m` performs a three-way merge of your uncommitted changes into the target branch. It works, and it can produce conflict markers in an uncommitted file — powerful, but the one to reach for last.",
+      "commands": ["git switch -m feature/pump-tuning", "git status --short", "cat pump.py", "git switch -m main"],
+      "expect": "Git merges your edit into the branch's version rather than refusing."
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "you finished on main" },
+    { "cmd": "git stash list", "empty": true,
+      "label": "nothing was left abandoned in the stash",
+      "hint": "git stash pop to bring it back" },
+    { "cmd": "git log --oneline main", "lines": 1,
+      "label": "no WIP commit was left in history",
+      "hint": "git reset --soft HEAD~1 unwinds it while keeping the change" },
+    { "cmd": "git log --oneline feature/pump-tuning", "lines": 2,
+      "label": "the feature branch is untouched by all of this" }
+  ],
+  "pitfalls": [
+    "Carried changes are not 'on' the new branch — they are uncommitted. Commit them on the wrong branch and you have made a mess that needs cherry-pick to fix.",
+    "`git stash` does not include untracked files by default. Use `-u`, or your new file stays behind and confuses you on the other branch.",
+    "`git switch -m` can leave conflict markers in files that are not committed anywhere. If it goes wrong, `git checkout --merge` cannot save you — there is no commit to go back to.",
+    "`git switch --discard-changes` exists and does exactly what it says. It is the `reset --hard` of switching."
+  ],
+  "cheatsheet": [
+    ["git switch <branch>", "carries edits when it safely can, refuses when it cannot"],
+    ["git stash push -m \"note\"", "park uncommitted work with a label"],
+    ["git stash pop", "bring it back, anywhere"],
+    ["git commit -a -m \"WIP\"", "the crash-proof alternative to stashing"],
+    ["git reset --soft HEAD~1", "unwind a WIP commit, keep the changes"],
+    ["git switch -m <branch>", "merge uncommitted changes into the target branch"],
+    ["git switch --discard-changes <branch>", "throw the edits away and go"]
+  ]
+}

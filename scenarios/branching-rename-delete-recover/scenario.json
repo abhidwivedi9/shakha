@@ -1,0 +1,108 @@
+{
+  "id": "branching-rename-delete-recover",
+  "title": "Rename a branch, delete the wrong one, get it back",
+  "category": "branching",
+  "level": "beginner",
+  "order": 3,
+  "duration_min": 10,
+  "summary": "Branch housekeeping: rename to match the ticket, delete what is merged, refuse to delete what is not — and recover the one you deleted anyway.",
+  "concepts": ["branch -m", "branch -d vs -D", "--merged / --no-merged", "reflog for branches", "branch <name> <sha>"],
+  "mental_model": "Deleting a branch deletes a name, not commits. If the commits were merged, they live on in the target branch. If they were not, they are unreachable but still in the object database — and the reflog remembers where the name pointed.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/thing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "run": "git switch -q main" },
+    { "run": "git switch -q -c experiment/wild-idea" },
+    { "write": { "path": "wild.py", "content": "IDEA = 'replace everything with a state machine'\n" } },
+    { "commit": { "message": "Sketch the state machine idea" } },
+    { "write": { "path": "wild.py", "content": "IDEA = 'replace everything with a state machine'\nNOTES = 'actually this might work'\n" } },
+    { "commit": { "message": "Flesh out the state machine sketch" } },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "Survey the branches",
+      "why": "`-vv` shows each branch, its tip and its upstream. Two feature branches, one badly named, one experimental. This is the normal state of any repository after a fortnight.",
+      "commands": ["git branch -vv", "git branch -a"]
+    },
+    {
+      "title": "Rename a branch to something meaningful",
+      "why": "`-m` renames. `feature/thing` tells a reviewer nothing; `feature/ABH-101-dosing` tells them the ticket and the subject. Renaming a local branch costs nothing and is never destructive.",
+      "commands": ["git branch -m feature/thing feature/ABH-101-dosing", "git branch -vv"],
+      "verify": [
+        { "cmd": "git branch --list feature/ABH-101-dosing", "not_empty": true,
+          "label": "the branch was renamed", "hint": "git branch -m feature/thing feature/ABH-101-dosing" }
+      ]
+    },
+    {
+      "title": "Ask which branches are safe to delete",
+      "why": "`--merged` lists branches whose commits are already contained in the current branch. Anything listed can be deleted with no loss. This is the query to run before any cleanup.",
+      "commands": ["git branch --merged main", "git branch --no-merged main"],
+      "expect": "Both feature branches are --no-merged: their work is not in main yet."
+    },
+    {
+      "title": "Merge one, then delete it safely",
+      "why": "After merging, the branch appears under `--merged` and `-d` removes it without argument. The commits survive inside main; only the label is gone.",
+      "commands": ["git merge --no-ff -m \"Merge dosing feature\" feature/ABH-101-dosing", "git branch --merged main", "git branch -d feature/ABH-101-dosing", "git branch -vv"],
+      "verify": [
+        { "cmd": "git log --oneline main", "contains": "Add dosing",
+          "label": "the merged work is in main" },
+        { "cmd": "git branch --list feature/ABH-101-dosing", "empty": true,
+          "label": "the merged branch was deleted" }
+      ]
+    },
+    {
+      "title": "Watch git refuse to delete unmerged work",
+      "why": "`-d` on the experimental branch fails, loudly, and tells you the sha. This refusal is one of git's best safety features — it only lets you lose work if you insist.",
+      "run": "git branch -d experiment/wild-idea",
+      "expect": "error: the branch is not fully merged. Exit code 1 is the point."
+    },
+    {
+      "title": "Insist, and lose it",
+      "why": "`-D` is `--delete --force`. The name is gone and the two commits are now unreachable — `git log --all` cannot see them at all.",
+      "commands": ["git branch -D experiment/wild-idea", "git branch -a", "git log --oneline --all"],
+      "expect": "No trace of the state machine commits anywhere in --all."
+    },
+    {
+      "title": "Recover the deleted branch",
+      "why": "The reflog holds every position HEAD has held, including commits that now belong to no branch. `git log -g` walks the reflog as if it were history, so you can search it by message instead of counting entries by eye.",
+      "commands": ["git reflog", "git log -g --oneline --grep=\"state machine\"", "sh -c 'git branch experiment/wild-idea $(git log -g --grep=\"Flesh out\" --format=%H -1)'", "git log --oneline experiment/wild-idea -2"],
+      "verify": [
+        { "cmd": "git log --oneline experiment/wild-idea", "contains": "Flesh out the state machine",
+          "label": "the deleted branch is back with both commits",
+          "hint": "find the tip sha in git reflog, then git branch <name> <sha>" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git branch --list feature/ABH-101-dosing", "empty": true,
+      "label": "the merged feature branch was cleaned up",
+      "hint": "merge it, then git branch -d" },
+    { "cmd": "git log --oneline main", "contains": "Add dosing",
+      "label": "…and its work is safely inside main" },
+    { "cmd": "git log --oneline experiment/wild-idea", "contains": ["Sketch the state machine", "Flesh out the state machine"],
+      "label": "the force-deleted branch was recovered from the reflog",
+      "hint": "git reflog to find the tip, then git branch experiment/wild-idea <sha>" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "you are on main" }
+  ],
+  "pitfalls": [
+    "`git branch -d` refuses unmerged branches relative to the branch you are standing on. Standing somewhere else changes the answer.",
+    "Renaming a branch that has an upstream leaves the old remote branch behind. Push the new name and delete the old one on the server explicitly.",
+    "`git branch -D` is the only common command that can silently orphan work. The reflog is your net, and it is not infinite.",
+    "`git fetch --prune` clears remote-tracking branches for branches deleted on the server; without it `git branch -r` accumulates ghosts."
+  ],
+  "cheatsheet": [
+    ["git branch -vv", "branches, tips and upstreams"],
+    ["git branch -m <old> <new>", "rename"],
+    ["git branch --merged main", "safe to delete"],
+    ["git branch --no-merged main", "would lose work"],
+    ["git branch -d <name>", "delete, refusing unmerged"],
+    ["git branch -D <name>", "delete regardless — the dangerous one"],
+    ["git branch <name> <sha>", "recreate a branch at any commit"]
+  ]
+}

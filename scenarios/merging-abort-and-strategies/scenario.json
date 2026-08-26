@@ -1,0 +1,126 @@
+{
+  "id": "merging-abort-and-strategies",
+  "title": "Abort, retry, and let git pick a side for you",
+  "category": "merging",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "Get out of a merge cleanly, then learn the strategy options that resolve whole classes of conflict automatically — and exactly when using them is a mistake.",
+  "concepts": ["merge --abort", "-X ours", "-X theirs", "-s ours", "diff3 conflict style", "MERGE_HEAD"],
+  "mental_model": "`-X ours` is a tie-breaker inside a normal merge: take our side of conflicting hunks, keep everything else merged. `-s ours` is a completely different beast: throw away their changes entirely and keep our tree. One letter, opposite risk.",
+  "danger": "`-s ours` discards the other branch's work while recording a merge that claims to include it. Later merges will believe those commits are already in. Use it only when you genuinely mean 'mark this as merged without taking anything'.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "config.yaml", "content": "retries: 3\ntimeout: 30\nregion: eu-west-1\n" } },
+    { "write": { "path": "notes.md", "content": "# Notes\n" } },
+    { "commit": { "message": "Add config" } },
+    { "run": "git switch -q -c feature/tuning" },
+    { "write": { "path": "config.yaml", "content": "retries: 10\ntimeout: 30\nregion: eu-west-1\n" } },
+    { "write": { "path": "tuning.md", "content": "# Tuning notes\n" } },
+    { "commit": { "message": "Raise retries for flaky upstream" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "config.yaml", "content": "retries: 5\ntimeout: 60\nregion: eu-west-1\n" } },
+    { "commit": { "message": "Raise retries and timeout after the incident" } }
+  ],
+  "steps": [
+    {
+      "title": "Start a merge and hit the conflict",
+      "why": "Both branches changed `retries`. The timeout change on main and the new file on the branch merge cleanly — only the one contested line stops the process.",
+      "commands": ["git merge feature/tuning", "git status --short", "cat config.yaml"],
+      "expect": "CONFLICT on config.yaml; tuning.md merges in silently."
+    },
+    {
+      "title": "Get out of it entirely",
+      "why": "`--abort` restores the pre-merge state completely: index, working tree, and the removal of MERGE_HEAD. Until you commit, a merge is always fully reversible — this is the escape hatch worth knowing before you need it.",
+      "commands": ["git merge --abort", "git status --short", "cat config.yaml", "ls"],
+      "expect": "Clean tree, main's version of config.yaml, tuning.md gone again.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the abort left a clean tree" },
+        { "cmd": "cat config.yaml", "contains": "retries: 5", "label": "main's version is intact" }
+      ]
+    },
+    {
+      "title": "Turn on a conflict style that shows the base",
+      "why": "The default markers show only the two sides. `diff3` (or `zdiff3`) adds the common ancestor between them, so you can see what each side actually changed rather than guessing.",
+      "commands": ["git config merge.conflictStyle zdiff3", "git merge feature/tuning", "cat config.yaml"],
+      "expect": "A ||||||| section showing the original 'retries: 3'."
+    },
+    {
+      "title": "Resolve using the base as evidence",
+      "why": "Now the reasoning is visible: the base was 3, we went to 5 after an incident, they went to 10 for a flaky upstream. 10 is the safer answer and the base told you why.",
+      "actions": [
+        { "write": { "path": "config.yaml", "content": "retries: 10\ntimeout: 60\nregion: eu-west-1\n" } },
+        { "run": "git add config.yaml" }
+      ],
+      "commands": ["git commit --no-edit", "cat config.yaml", "git log --oneline --graph -3"],
+      "verify": [
+        { "cmd": "cat config.yaml", "contains": ["retries: 10", "timeout: 60"],
+          "label": "both sides' real intentions survived" }
+      ]
+    },
+    {
+      "title": "Now the automatic tie-breakers",
+      "why": "`-X ours` resolves conflicting hunks in favour of the branch you are on, still merging everything non-conflicting. It is a time-saver for generated files and lockfiles — and a silent bug factory for source code.",
+      "actions": [
+        { "run": "git switch -q -c experiment/strategies main" },
+        { "run": "git switch -q -c side-branch main" },
+        { "write": { "path": "config.yaml", "content": "retries: 99\ntimeout: 60\nregion: us-east-1\n" } },
+        { "commit": { "message": "Experiment with aggressive retries" } },
+        { "run": "git switch -q experiment/strategies" }
+      ],
+      "commands": ["git merge -X ours -m \"Merge side-branch, preferring our config\" side-branch", "cat config.yaml"],
+      "expect": "Our retries survive; region changed to us-east-1 because that hunk did not conflict.",
+      "verify": [
+        { "cmd": "cat config.yaml", "contains": "region: us-east-1",
+          "label": "-X ours still merged the non-conflicting change",
+          "hint": "that is the difference between -X ours and -s ours" }
+      ]
+    },
+    {
+      "title": "The dangerous sibling",
+      "why": "`-s ours` ignores the other tree completely. The merge commit records side-branch as a parent, so git will consider it merged forever, but not one line of it was taken.",
+      "actions": [
+        { "run": "git switch -q -c experiment/strategy-ours main" }
+      ],
+      "commands": ["git merge -s ours -m \"Record side-branch as merged without taking it\" side-branch", "cat config.yaml", "git log --oneline --graph -3"],
+      "expect": "config.yaml is untouched — still main's merged version — despite a merge commit with two parents.",
+      "verify": [
+        { "cmd": "cat config.yaml", "contains": ["retries: 10", "region: eu-west-1"],
+          "label": "-s ours discarded the other side entirely, region change included",
+          "hint": "compare with the -X ours result, which did take the region change" }
+      ]
+    },
+    {
+      "title": "Go back to the real result",
+      "why": "The experiment branches were for demonstration. main holds the merge you resolved by hand, which is the one you would actually ship.",
+      "commands": ["git switch main", "cat config.yaml", "git log --oneline --graph -3"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main", "label": "you are back on main" },
+    { "cmd": "cat config.yaml", "contains": ["retries: 10", "timeout: 60"],
+      "label": "main's merge kept the right value from each side",
+      "hint": "resolve by reading the base, not by picking a side" },
+    { "cmd": "git config --get merge.conflictStyle", "equals": "zdiff3",
+      "label": "the three-way conflict style is enabled",
+      "hint": "git config merge.conflictStyle zdiff3" },
+    { "cmd": "git rev-list --parents -n 1 main", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "main's tip is the merge commit" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "`-X ours` and `-s ours` differ by one letter and by everything else. Read the command twice before running it on a shared branch.",
+    "`-X ours` on source code silently drops a colleague's fix inside a conflicting hunk. Reserve it for generated files, lockfiles and changelogs.",
+    "`git merge --abort` only works before the merge commit exists. Afterwards you need `git reset --hard ORIG_HEAD`.",
+    "`zdiff3` is strictly more informative than the default `merge` style. Turn it on globally and never look back."
+  ],
+  "cheatsheet": [
+    ["git merge --abort", "undo an in-progress merge completely"],
+    ["git reset --hard ORIG_HEAD", "undo a merge you already committed"],
+    ["git config merge.conflictStyle zdiff3", "show the common ancestor in conflicts"],
+    ["git merge -X ours <branch>", "prefer our side in conflicting hunks only"],
+    ["git merge -X theirs <branch>", "prefer their side in conflicting hunks"],
+    ["git merge -s ours <branch>", "record as merged, take nothing — rarely correct"],
+    ["git merge --no-commit <branch>", "stage the merge but let you inspect before committing"]
+  ]
+}

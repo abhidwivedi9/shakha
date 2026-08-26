@@ -1,0 +1,113 @@
+{
+  "id": "branching-from-past-commit",
+  "title": "Start a hotfix branch from the release, not from main",
+  "category": "branching",
+  "level": "intermediate",
+  "order": 6,
+  "duration_min": 10,
+  "summary": "Production runs v1.0. main has moved on by six commits of unreleased work. Branch from the right point so the hotfix ships without dragging unfinished features with it.",
+  "concepts": ["branch from a tag", "branch from a sha", "switch -c <ref>", "merge base", "shipping surface"],
+  "mental_model": "A new branch starts wherever you point it, not where you happen to be standing. `git switch -c fix v1.0` means 'give me the world as it was at v1.0'. Getting this wrong is how unreleased features reach production inside a one-line fix.",
+  "danger": "Branching a hotfix from main includes every unreleased commit on main. The pull request looks like one line; the deployment is not.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = '1.0'\n" } },
+    { "write": { "path": "auth.py", "content": "def check(token):\n    return len(token) > 8\n" } },
+    { "commit": { "message": "Release 1.0" } },
+    { "run": "git tag -a v1.0 -m \"Version 1.0\"" },
+    { "write": { "path": "experimental.py", "content": "FEATURE_FLAG = 'half finished'\n" } },
+    { "commit": { "message": "Start the scheduling rewrite" } },
+    { "write": { "path": "experimental.py", "content": "FEATURE_FLAG = 'half finished'\nBROKEN = True\n" } },
+    { "commit": { "message": "More scheduling rewrite, not working yet" } },
+    { "write": { "path": "app.py", "content": "VERSION = '1.1-dev'\n" } },
+    { "commit": { "message": "Bump to 1.1-dev" } }
+  ],
+  "steps": [
+    {
+      "title": "See what main is carrying",
+      "why": "Three commits since the release, two of them explicitly unfinished. Anything branched from here inherits all of it.",
+      "commands": ["git log --oneline --decorate", "git log --oneline v1.0..main", "ls"]
+    },
+    {
+      "title": "Branch from the tag, not from HEAD",
+      "why": "`switch -c <name> <start-point>` creates the branch at the start point and moves there. The working tree becomes exactly the released code — the experimental file is not even on disk.",
+      "commands": ["git switch -c hotfix/auth-length v1.0", "ls", "cat app.py", "git log --oneline"],
+      "expect": "No experimental.py, VERSION back to 1.0, one commit of history.",
+      "verify": [
+        { "cmd": "ls", "not_contains": "experimental.py",
+          "label": "the hotfix branch does not contain unreleased work",
+          "hint": "git switch -c hotfix/auth-length v1.0" }
+      ]
+    },
+    {
+      "title": "Make the fix",
+      "why": "One commit, on top of the released code. Its parent is the release, so the diff against v1.0 is exactly the fix and nothing else.",
+      "actions": [
+        { "write": { "path": "auth.py", "content": "import hmac\n\n\ndef check(token, expected):\n    return hmac.compare_digest(token, expected)\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Use constant-time comparison in auth check\"" }
+      ],
+      "commands": ["git log --oneline", "git diff --stat v1.0..HEAD"],
+      "expect": "One file changed. That is the entire shipping surface.",
+      "verify": [
+        { "cmd": "git diff --name-only v1.0..HEAD", "equals": "auth.py",
+          "label": "the branch changes exactly one file relative to the release" }
+      ]
+    },
+    {
+      "title": "Tag and ship the patch release",
+      "why": "A tag on the hotfix commit gives operations something to deploy by name. v1.0.1 contains v1.0 plus one fix, and nothing else — provable with a diff.",
+      "commands": ["git tag -a v1.0.1 -m \"Patch release 1.0.1\"", "git diff --stat v1.0 v1.0.1", "git log --oneline --decorate -2"],
+      "verify": [
+        { "cmd": "git diff --name-only v1.0 v1.0.1", "equals": "auth.py",
+          "label": "the patch release differs from 1.0 by one file" }
+      ]
+    },
+    {
+      "title": "Merge the fix back into main",
+      "why": "The hotfix must also reach the development line, or the next release regresses it. Merging is right here — the fix's commit becomes reachable from main without main's work coming along to production.",
+      "commands": ["git switch main", "git merge --no-ff -m \"Merge hotfix 1.0.1 into main\" hotfix/auth-length", "git log --oneline --graph --all --decorate", "cat auth.py"],
+      "verify": [
+        { "cmd": "git log --oneline main", "contains": "constant-time comparison",
+          "label": "main has the fix too", "hint": "merge the hotfix branch back into main" }
+      ]
+    },
+    {
+      "title": "Compare with what would have happened",
+      "why": "Branching from main would have made the shipping diff include both experimental commits. Look at the difference in surface area — one file versus three.",
+      "commands": ["git diff --stat v1.0..main", "git diff --stat v1.0..v1.0.1"],
+      "expect": "main differs from the release by three files; the patch release by one."
+    },
+    {
+      "title": "Other start points worth knowing",
+      "why": "Any revision works as a start point: a sha, a tag, `origin/main`, or `main~5`. Branching from `origin/main` rather than your possibly-stale local main is a habit worth building.",
+      "commands": ["git switch -c spike/from-old-point main~3", "git log --oneline -1", "git switch main", "git branch -D spike/from-old-point"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git diff --name-only v1.0 v1.0.1", "equals": "auth.py",
+      "label": "the patch release contains exactly one changed file",
+      "hint": "branch the hotfix from v1.0, not from main" },
+    { "cmd": "git log --oneline main", "contains": "constant-time comparison",
+      "label": "the fix was merged back into main",
+      "hint": "git merge --no-ff hotfix/auth-length" },
+    { "cmd": "git tag", "contains": ["v1.0", "v1.0.1"],
+      "label": "both releases are tagged" },
+    { "cmd": "git log --oneline v1.0..v1.0.1", "lines": 1,
+      "label": "the patch release is one commit ahead of the release it patches" }
+  ],
+  "pitfalls": [
+    "`git switch -c fix` with no start point branches from wherever you are, which is usually main. Naming the start point is the whole discipline.",
+    "Cherry-picking the fix onto main instead of merging leaves two commits with the same content and different shas — harmless but confusing during audits.",
+    "Branching from a stale local main gives you yesterday's world. Use `origin/main` after a fetch when you mean 'what the server has'.",
+    "Tags do not move. If you re-cut a release, make a new tag rather than force-updating the old one."
+  ],
+  "cheatsheet": [
+    ["git switch -c <name> <start>", "branch at a tag, sha or branch"],
+    ["git switch -c <name> origin/main", "branch from the server's state"],
+    ["git switch -c <name> main~3", "branch from three commits back"],
+    ["git diff --stat <tag>..HEAD", "the shipping surface of a branch"],
+    ["git tag -a v1.0.1 -m \"...\"", "annotate the patch release"],
+    ["git merge --no-ff <hotfix>", "bring the fix back to the main line"]
+  ]
+}
