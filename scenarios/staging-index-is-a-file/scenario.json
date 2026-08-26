@@ -1,0 +1,106 @@
+{
+  "id": "staging-index-is-a-file",
+  "title": "The index is a real file — open it and look",
+  "category": "staging",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 12,
+  "summary": "Stop treating the staging area as an abstraction. It is .git/index, it lists paths with blob hashes and modes, and you can write to it directly without any file on disk.",
+  "concepts": [".git/index", "ls-files -s", "hash-object", "update-index", "write-tree", "file modes"],
+  "mental_model": "The index is a sorted list of (mode, blob hash, path). `git add` hashes a file into the object store and writes one of these rows. A commit is that list turned into a tree. Nothing else is going on.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "write": { "path": "run.sh", "content": "#!/bin/sh\npython app.py\n" } },
+    { "commit": { "message": "Add app and runner" } }
+  ],
+  "steps": [
+    {
+      "title": "Read the index as a table",
+      "why": "`ls-files -s` prints the actual rows: mode, blob hash, stage number, path. 100644 is a normal file, 100755 is executable. Stage 0 means 'no conflict'.",
+      "commands": ["git ls-files -s", "ls .git"],
+      "expect": "Two rows, and an `index` file sitting in .git."
+    },
+    {
+      "title": "Prove the hash is just content",
+      "why": "`hash-object` computes the id git would store for that content. It matches the row in the index exactly, because that is where the row's hash came from.",
+      "commands": ["git hash-object app.py", "git ls-files -s app.py", "git cat-file -p :app.py"],
+      "expect": "The same 40-character hash in both, and cat-file prints the content back."
+    },
+    {
+      "title": "Change the index without touching any file",
+      "why": "Hash some content straight into the object store with `-w`, then point the index row at it. app.py on disk is untouched — you have staged a version of the file that has never existed as a file.",
+      "actions": [
+        { "write": { "path": "ghost.txt", "content": "print('staged from thin air')\n" } }
+      ],
+      "commands": ["git hash-object -w ghost.txt", "git status --short"],
+      "expect": "A hash printed. The object now exists in .git/objects."
+    },
+    {
+      "title": "Point the index row at that object",
+      "why": "`update-index --cacheinfo` writes a row by hand: mode, hash, path. Status now reports app.py as staged-and-modified, because the index disagrees with both HEAD and the disk.",
+      "actions": [
+        { "run": "sh -c 'git update-index --cacheinfo 100644,$(git hash-object -w ghost.txt),app.py'" }
+      ],
+      "commands": ["git status --short", "git diff --staged", "cat app.py"],
+      "expect": "The staged diff shows content that is nowhere on disk.",
+      "verify": [
+        { "cmd": "git diff --staged", "contains": "thin air",
+          "label": "the index holds content that exists in no file",
+          "hint": "git update-index --cacheinfo 100644,<hash>,app.py" }
+      ]
+    },
+    {
+      "title": "Turn the index into a tree",
+      "why": "`write-tree` is literally what `git commit` calls. It takes the index rows and produces a tree object — the thing a commit points at. Read it back with cat-file and you see the same list.",
+      "commands": ["git write-tree", "sh -c 'git cat-file -p $(git write-tree)'"],
+      "expect": "A tree object listing both paths with their modes and hashes."
+    },
+    {
+      "title": "Put everything back",
+      "why": "`git restore --staged` rewrites the row from HEAD. The hand-made object stays in the database, unreferenced, until garbage collection removes it.",
+      "actions": [ { "delete": "ghost.txt" } ],
+      "commands": ["git restore --staged app.py", "git status --short", "git ls-files -s"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the index is back to normal" }
+      ]
+    },
+    {
+      "title": "Why the file mode row matters",
+      "why": "Git stores exactly two file modes: 100644 and 100755. That is the entire permission model — and `update-index --chmod` is how you fix a script that lost its executable bit on a Windows checkout.",
+      "commands": ["git update-index --chmod=+x run.sh", "git ls-files -s run.sh"],
+      "expect": "run.sh's mode flips to 100755 in the index.",
+      "verify": [
+        { "cmd": "git ls-files -s run.sh", "contains": "100755",
+          "label": "the executable bit is set in the index",
+          "hint": "git update-index --chmod=+x run.sh" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files -s run.sh", "contains": "100755",
+      "label": "run.sh is marked executable in the index",
+      "hint": "git update-index --chmod=+x run.sh" },
+    { "cmd": "git ls-files -s app.py", "contains": "100644",
+      "label": "app.py is a normal file — git only has these two modes" },
+    { "cmd": "git cat-file -p :app.py", "contains": "reef",
+      "label": "the index row for app.py points back at the real content",
+      "hint": "git restore --staged app.py to undo the hand-written row" },
+    { "cmd": "git ls-files", "lines": 2,
+      "label": "the index has exactly the two tracked paths" }
+  ],
+  "pitfalls": [
+    "`.git/index` is a binary file. Never edit it by hand — use the plumbing commands, which is what they are for.",
+    "Deleting `.git/index` is recoverable: `git reset` rebuilds it from HEAD. You lose staged-but-uncommitted work only.",
+    "Git tracks no permissions beyond the executable bit. Owner, group and read-only flags do not survive a clone.",
+    "`update-index --assume-unchanged` is often suggested for ignoring local config edits. It lies to git and causes lost changes — use a separate untracked file instead."
+  ],
+  "cheatsheet": [
+    ["git ls-files -s", "the index as a table: mode, hash, stage, path"],
+    ["git hash-object <file>", "the id git would give that content"],
+    ["git hash-object -w <file>", "…and store it in the object database"],
+    ["git cat-file -p :<path>", "print the index version of a file"],
+    ["git update-index --chmod=+x <file>", "set the executable bit"],
+    ["git write-tree", "turn the index into a tree object — what commit does"]
+  ]
+}

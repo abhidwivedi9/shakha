@@ -140,8 +140,12 @@ class Sandbox:
 
         started = time.time()
         try:
+            # stdin is closed deliberately: some commands (shortlog, hash-object)
+            # fall back to reading stdin when it is not a terminal, and would
+            # otherwise block the dashboard forever.
             proc = subprocess.run(argv, cwd=str(workdir), env=env, capture_output=True,
-                                  text=True, timeout=30, errors="replace")
+                                  stdin=subprocess.DEVNULL, text=True, timeout=30,
+                                  errors="replace")
             out, err, code = proc.stdout, proc.stderr, proc.returncode
         except FileNotFoundError:
             out, err, code = "", "%s: command not found" % argv[0], 127

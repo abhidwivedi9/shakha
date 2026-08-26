@@ -1,0 +1,94 @@
+{
+  "id": "staging-stage-then-edit",
+  "title": "You staged it, then changed it. Which version gets committed?",
+  "category": "staging",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 10,
+  "summary": "The index holds a snapshot of the file as it was when you ran git add — not a live link to it. Watch a file exist in two versions at once, and commit the wrong one on purpose.",
+  "concepts": ["index snapshot", "staged vs working copy", "git add again", "diff --staged"],
+  "mental_model": "`git add` photographs the file. Editing the file afterwards does not change the photograph. Until you take a new photograph, the commit will contain the old one.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "alert.py", "content": "THRESHOLD = 25\n\n\ndef check(temp):\n    return temp > THRESHOLD\n" } },
+    { "commit": { "message": "Add alert check" } }
+  ],
+  "steps": [
+    {
+      "title": "Make a change and stage it",
+      "why": "This is the version the index now holds. Note the number: 28.",
+      "actions": [
+        { "write": { "path": "alert.py", "content": "THRESHOLD = 28\n\n\ndef check(temp):\n    return temp > THRESHOLD\n" } },
+        { "run": "git add alert.py" }
+      ],
+      "commands": ["git status --short", "git diff --staged"],
+      "expect": "M in the left column, and the staged diff shows 25 becoming 28."
+    },
+    {
+      "title": "Change it again without staging",
+      "why": "Now the file exists in three versions: 25 in HEAD, 28 in the index, 31 on disk. Status shows M in *both* columns — the same file listed as staged and modified simultaneously.",
+      "actions": [
+        { "write": { "path": "alert.py", "content": "THRESHOLD = 31\n\n\ndef check(temp):\n    return temp > THRESHOLD\n" } }
+      ],
+      "commands": ["git status --short", "git status"],
+      "expect": "MM alert.py — the double M is the whole lesson."
+    },
+    {
+      "title": "Prove all three versions exist",
+      "why": "Three commands, three answers, one file. This is not a bug or a cache — it is the index doing exactly what it is for.",
+      "commands": ["git show HEAD:alert.py", "git show :alert.py", "cat alert.py"],
+      "expect": "25, then 28, then 31."
+    },
+    {
+      "title": "Commit and get the version you did not expect",
+      "why": "The commit takes the index. 28 is committed; 31 stays on disk as an uncommitted change. Nothing warned you, because nothing is wrong.",
+      "commands": ["git commit -m \"Raise alert threshold\"", "git show HEAD:alert.py", "git status --short"],
+      "expect": "The commit contains 28, and alert.py is still modified.",
+      "verify": [
+        { "cmd": "git show HEAD:alert.py", "contains": "THRESHOLD = 28",
+          "label": "the commit captured the staged version, not the disk version" }
+      ]
+    },
+    {
+      "title": "Do it properly",
+      "why": "Re-add the file to refresh the index, then amend. The rule is simple: `git add` again after every edit, or check `git diff --staged` before committing.",
+      "commands": ["git add alert.py", "git diff --staged", "git commit --amend --no-edit", "git show HEAD:alert.py", "git status --short"],
+      "verify": [
+        { "cmd": "git show HEAD:alert.py", "contains": "THRESHOLD = 31",
+          "label": "the commit now has the final version",
+          "hint": "git add alert.py again, then git commit --amend --no-edit" }
+      ]
+    },
+    {
+      "title": "The check that makes this impossible",
+      "why": "`git diff` should be empty before you commit if you meant to commit everything. If it is not, something on disk is not going in. Two seconds, every time.",
+      "commands": ["git diff", "git diff --staged", "git status --short"],
+      "expect": "All three empty — nothing left behind."
+    }
+  ],
+  "verify": [
+    { "cmd": "git show HEAD:alert.py", "contains": "THRESHOLD = 31",
+      "label": "the committed version is the one you actually wanted",
+      "hint": "stage again after editing, then amend" },
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "you fixed it by amending, not by adding a second commit" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "nothing is left uncommitted" },
+    { "cmd": "git diff", "empty": true,
+      "label": "working tree matches the index" }
+  ],
+  "pitfalls": [
+    "`MM` in status means the file is staged AND has newer unstaged edits. It is the most-missed signal in git.",
+    "`git commit -a` sidesteps this by restaging tracked files at commit time — which is convenient right up until it commits a debug line you meant to drop.",
+    "`git show :<path>` reads the index copy; `git show HEAD:<path>` reads the commit. Handy for proving what is about to happen.",
+    "GUI clients often auto-restage on commit, which hides this behaviour and then confuses people when they return to the CLI."
+  ],
+  "cheatsheet": [
+    ["git add <file>", "photograph the file as it is right now"],
+    ["git status --short", "MM = staged and modified again"],
+    ["git show :<path>", "the index version of a file"],
+    ["git show HEAD:<path>", "the committed version"],
+    ["git diff", "index vs disk — must be empty if you staged everything"],
+    ["git diff --staged", "exactly what the next commit will contain"]
+  ]
+}

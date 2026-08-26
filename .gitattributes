@@ -1,0 +1,9 @@
+# Practise what the setup-line-endings scenario preaches.
+* text=auto
+
+*.py text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
+*.md text eol=lf

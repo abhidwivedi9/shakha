@@ -1,0 +1,92 @@
+{
+  "id": "staging-unstage-safely",
+  "title": "Four ways to unstage, one of which destroys your work",
+  "category": "staging",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "reset, reset --hard, restore --staged and rm --cached all 'unstage' something. Run each one and watch precisely which of the three areas it touches.",
+  "concepts": ["reset --mixed", "reset --hard", "restore --staged", "rm --cached", "the three areas"],
+  "mental_model": "Every one of these commands answers 'which areas do I overwrite?'. `restore --staged` and `reset` touch the index only. `reset --hard` touches the index AND the working tree. That single difference is the whole risk.",
+  "danger": "`git reset --hard` overwrites your files. Anything not committed is gone, with no reflog entry to recover it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "a.py", "content": "A = 1\n" } },
+    { "write": { "path": "b.py", "content": "B = 1\n" } },
+    { "write": { "path": "c.py", "content": "C = 1\n" } },
+    { "commit": { "message": "Add modules" } }
+  ],
+  "steps": [
+    {
+      "title": "Stage three changes plus a new file",
+      "why": "Four things in the index, each of which we will remove differently. Keep an eye on the file contents, not just the status letters.",
+      "actions": [
+        { "write": { "path": "a.py", "content": "A = 99\n" } },
+        { "write": { "path": "b.py", "content": "B = 99\n" } },
+        { "write": { "path": "c.py", "content": "C = 99\n" } },
+        { "write": { "path": "new.py", "content": "NEW = True\n" } },
+        { "run": "git add -A" }
+      ],
+      "commands": ["git status --short"],
+      "expect": "Three M and one A, all in the left column."
+    },
+    {
+      "title": "restore --staged — the clear spelling",
+      "why": "It copies HEAD's version into the index. The working tree is not mentioned in the command and not touched by it: a.py on disk still says 99.",
+      "commands": ["git restore --staged a.py", "git status --short", "cat a.py"],
+      "expect": "a.py moves to the right column and still reads 99."
+    },
+    {
+      "title": "reset — the older spelling, same effect",
+      "why": "`git reset <path>` is `--mixed` by default: index updated, working tree left alone. Identical outcome to restore --staged, which is why the newer command exists.",
+      "commands": ["git reset b.py", "git status --short", "cat b.py"],
+      "expect": "b.py behaves exactly like a.py did."
+    },
+    {
+      "title": "rm --cached — unstages a NEW file completely",
+      "why": "For a file that was never in HEAD, there is no old version to restore. `rm --cached` drops it from the index entirely and it reverts to untracked — still on disk.",
+      "commands": ["git rm --cached new.py", "git status --short", "ls"],
+      "expect": "new.py becomes ?? untracked, and the file survives."
+    },
+    {
+      "title": "reset --hard — the one that takes your edits with it",
+      "why": "This resets index AND working tree to HEAD. c.py loses its 99 permanently. Notice the other files: a.py and b.py lose their edits too, because --hard is repo-wide, not path-scoped.",
+      "commands": ["git reset --hard", "git status --short", "cat a.py", "cat b.py", "cat c.py"],
+      "expect": "All three back to 1. Only untracked new.py survives.",
+      "verify": [
+        { "cmd": "cat c.py", "equals": "C = 1", "label": "reset --hard reverted the working tree too" }
+      ]
+    },
+    {
+      "title": "Confirm what survived and what did not",
+      "why": "Untracked files are outside reset's remit — that is why new.py is still here. Committed history is untouched. Only uncommitted tracked edits were destroyed.",
+      "commands": ["git log --oneline", "git status --short", "ls"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git status --porcelain", "contains": "?? new.py",
+      "label": "the new file ended up untracked, not staged",
+      "hint": "git rm --cached new.py" },
+    { "cmd": "git diff --cached --name-only", "empty": true,
+      "label": "nothing is staged any more" },
+    { "cmd": "cat a.py", "equals": "A = 1",
+      "label": "reset --hard reverted every tracked edit",
+      "hint": "that is the point — --hard is repo-wide and destructive" },
+    { "cmd": "git log --oneline", "lines": 1,
+      "label": "history was never at risk — only uncommitted work was" }
+  ],
+  "pitfalls": [
+    "`git reset --hard` takes no path argument in the form people expect. It resets everything, not just the file you were thinking about.",
+    "`git reset <path>` and `git restore --staged <path>` are equivalent. Prefer restore: reset does four different jobs depending on flags.",
+    "Unstaging a never-committed file needs `rm --cached`; `restore --staged` on it silently does nothing useful.",
+    "If you are about to run --hard and are not certain, run `git stash -u` instead. Same clean tree, fully reversible."
+  ],
+  "cheatsheet": [
+    ["git restore --staged <file>", "unstage, keep the edit"],
+    ["git reset <file>", "the same thing, older spelling"],
+    ["git rm --cached <file>", "unstage a file that was never committed"],
+    ["git reset --hard", "index AND working tree back to HEAD — destructive"],
+    ["git reset --soft HEAD~1", "undo a commit, keep everything staged"],
+    ["git stash -u", "the reversible way to get a clean tree"]
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "id": "staging-intent-to-add",
+  "title": "Make git diff see a file it has never met",
+  "category": "staging",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 10,
+  "summary": "New files are invisible to git diff and to hunk-level staging. `git add -N` registers the path without its content, which unlocks both — and quietly changes what `git stash` and `commit -a` will do.",
+  "concepts": ["--intent-to-add", "empty blob in the index", "diff for new files", "add -p on new files"],
+  "mental_model": "`add -N` puts the path in the index with empty content. Git now knows the file exists, so a diff against it shows every line as an addition — which is exactly what you need to review or partially stage a new file.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Add app" } },
+    { "write": { "path": "chemistry.py", "content": "PH_TARGET = 8.1\n\n\ndef adjust(current):\n    return PH_TARGET - current\n\n\ndef debug_dump(state):\n    print('DEBUG', state)\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Watch git diff ignore a whole file",
+      "why": "chemistry.py is untracked, so there is nothing in the index to compare it with. `git diff` reports nothing at all — which is why a new file can slip through a pre-commit review completely unseen.",
+      "commands": ["git status --short", "git diff", "git diff --stat"],
+      "expect": "Status lists it as ??, but diff is silent."
+    },
+    {
+      "title": "Register the path without the content",
+      "why": "`-N` (or `--intent-to-add`) adds the path to the index pointing at an empty blob. You have told git the file is coming, without staging anything to commit.",
+      "commands": ["git add -N chemistry.py", "git status --short", "git ls-files -s chemistry.py"],
+      "expect": "It stops being ?? and becomes an index entry pointing at e69de29 — the hash of empty content, which every git repository contains.",
+      "verify": [
+        { "cmd": "git ls-files -s chemistry.py", "contains": "e69de29",
+          "label": "the path is in the index, pointing at the empty blob",
+          "hint": "git add -N chemistry.py" }
+      ]
+    },
+    {
+      "title": "Now diff can see it",
+      "why": "Every line shows as an addition against the empty blob. This is the state that lets you review a new file with the same tools you use for edits.",
+      "commands": ["git diff", "git diff --stat"],
+      "expect": "The whole file as + lines."
+    },
+    {
+      "title": "Stage only part of the new file",
+      "why": "This is the real payoff: hunk-level staging works on new files once they are intent-to-add. Here we stage the useful half and leave the debug helper out, using a patch — which is what `git add -p` does interactively.",
+      "actions": [
+        { "write": { "path": "part.patch", "content": "--- a/chemistry.py\n+++ b/chemistry.py\n@@ -0,0 +1,5 @@\n+PH_TARGET = 8.1\n+\n+\n+def adjust(current):\n+    return PH_TARGET - current\n" } },
+        { "run": "git apply --cached part.patch" }
+      ],
+      "commands": ["git diff --staged", "git diff"],
+      "expect": "Staged: the constant and adjust(). Unstaged: the debug_dump helper you did not want yet.",
+      "verify": [
+        { "cmd": "git diff --staged", "contains": "def adjust", "label": "the useful half is staged" },
+        { "cmd": "git diff --staged", "not_contains": "debug_dump",
+          "label": "the debug helper stayed out" }
+      ]
+    },
+    {
+      "title": "Commit the partial file",
+      "why": "The commit contains a five-line chemistry.py. The rest is still on disk, unstaged — a perfectly normal state that would have been impossible without -N.",
+      "commands": ["git commit -m \"Add pH adjustment helper\"", "git show HEAD:chemistry.py", "git status --short"],
+      "verify": [
+        { "cmd": "git show HEAD:chemistry.py", "not_contains": "debug_dump",
+          "label": "the committed file is the partial version" }
+      ]
+    },
+    {
+      "title": "Tidy up",
+      "why": "Commit the remainder, or drop it. Either way, notice you never had to choose between committing a whole new file and committing none of it.",
+      "actions": [ { "delete": "part.patch" } ],
+      "commands": ["git add chemistry.py", "git commit -m \"Add dosing debug helper\"", "git log --oneline", "git status --short"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "the new file arrived as two reviewable commits",
+      "hint": "add -N, stage one hunk, commit, then commit the rest" },
+    { "cmd": "git show HEAD~1:chemistry.py", "not_contains": "debug_dump",
+      "label": "the first commit holds only the reviewed half" },
+    { "cmd": "git show HEAD:chemistry.py", "contains": "debug_dump",
+      "label": "the second commit adds the rest" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "clean tree, patch file removed" }
+  ],
+  "pitfalls": [
+    "An intent-to-add file makes `git stash` refuse in older git versions, and changes what `git commit -a` picks up. Do not leave files in this state.",
+    "`git commit` with only intent-to-add entries commits an empty file — the path with no content. Always check `git diff --staged` first.",
+    "Status shows an intent-to-add file as ` A` on modern git and `AM` on older versions. Either way it has stopped being `??`, which is your signal that -N is in play.",
+    "`git add -A` on an intent-to-add file stages it fully, discarding your careful partial selection."
+  ],
+  "cheatsheet": [
+    ["git add -N <file>", "register the path, stage no content"],
+    ["git add --intent-to-add <file>", "the long spelling"],
+    ["git diff", "now shows new files as all-additions"],
+    ["git add -p <file>", "hunk-stage a new file, once -N is done"],
+    ["git ls-files -s <file>", "see the index entry and its blob hash"],
+    ["git reset <file>", "undo the intent-to-add"]
+  ]
+}

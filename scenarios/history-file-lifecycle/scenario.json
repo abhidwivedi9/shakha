@@ -1,0 +1,110 @@
+{
+  "id": "history-file-lifecycle",
+  "title": "When was this file added — and who deleted the one I need?",
+  "category": "history",
+  "level": "intermediate",
+  "order": 6,
+  "duration_min": 12,
+  "summary": "Trace a file's whole life: the commit that created it, the commits that changed it, and the commit that deleted it — then bring a deleted file back from the dead.",
+  "concepts": ["--diff-filter=A", "--diff-filter=D", "log --follow", "restoring deleted files", "rev^"],
+  "mental_model": "`--diff-filter` narrows history to commits that Added, Deleted, Modified or Renamed a path. Add, delete and rename are the three events in a file's life, and each has a one-letter filter.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "legacy/migrate.py", "content": "def migrate_v1_to_v2():\n    print('migrating')\n" } },
+    { "commit": { "message": "Add v1 to v2 migration script" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Bump version" } },
+    { "write": { "path": "legacy/migrate.py", "content": "def migrate_v1_to_v2():\n    print('migrating')\n\n\ndef verify():\n    return True\n" } },
+    { "commit": { "message": "Add migration verification" } },
+    { "write": { "path": "docs.md", "content": "# Docs\n" } },
+    { "commit": { "message": "Add docs" } },
+    { "delete": "legacy/migrate.py" },
+    { "commit": { "message": "Remove legacy migration code" } },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Bump to v3" } }
+  ],
+  "steps": [
+    {
+      "title": "Confirm the file is gone from the working tree",
+      "why": "It is not on disk and not in HEAD. Everything below happens in history, where it still exists — deleting a file never removes it from past commits.",
+      "commands": ["ls", "git ls-files"],
+      "expect": "No legacy/ directory anywhere."
+    },
+    {
+      "title": "Search history for the path",
+      "why": "`log -- <path>` still finds it, because the path existed in past commits. Adding `--all` would search every branch too. Four commits touched this file across its life.",
+      "commands": ["git log --oneline -- legacy/migrate.py"],
+      "expect": "Three commits: added, modified, deleted."
+    },
+    {
+      "title": "Find the commit that created it",
+      "why": "`--diff-filter=A` keeps only commits where the path was Added. This is the answer to 'when did this get here and why', which is usually the real question behind 'what is this file'.",
+      "commands": ["git log --diff-filter=A --oneline -- legacy/migrate.py", "git log --diff-filter=A -1 --format='%h %an %ad %s' --date=short -- legacy/migrate.py"],
+      "verify": [
+        { "cmd": "git log --diff-filter=A --oneline -- legacy/migrate.py", "lines": 1,
+          "label": "exactly one commit added the file" }
+      ]
+    },
+    {
+      "title": "Find the commit that deleted it",
+      "why": "`--diff-filter=D` is the mirror image, and it is the one you reach for during an incident. Now you have a sha, an author and a message explaining the removal.",
+      "commands": ["git log --diff-filter=D --oneline -- legacy/migrate.py", "git show --stat $(git log --diff-filter=D -1 --format=%H -- legacy/migrate.py)"],
+      "verify": [
+        { "cmd": "git log --diff-filter=D --oneline -- legacy/migrate.py", "lines": 1,
+          "label": "exactly one commit deleted it" }
+      ]
+    },
+    {
+      "title": "Read the file as it was just before deletion",
+      "why": "The deleting commit does not contain the file — its parent does. `<sha>^` is that parent, and the caret is the single most useful character in git's revision syntax.",
+      "commands": ["sh -c 'git show $(git log --diff-filter=D -1 --format=%H -- legacy/migrate.py)^:legacy/migrate.py'"],
+      "expect": "The full file, printed from history."
+    },
+    {
+      "title": "Bring it back",
+      "why": "`restore --source` with that parent revision writes the file back into your working tree at its last known good state. No revert, no reset, no touching the six commits that came after.",
+      "actions": [
+        { "run": "sh -c 'git restore --source=$(git log --diff-filter=D -1 --format=%H -- legacy/migrate.py)^ -- legacy/migrate.py'" }
+      ],
+      "commands": ["ls legacy", "cat legacy/migrate.py", "git status --short"],
+      "verify": [
+        { "cmd": "cat legacy/migrate.py", "contains": "def verify",
+          "label": "the deleted file is back, with its final content",
+          "hint": "restore --source=<deleting-sha>^ -- <path>" }
+      ]
+    },
+    {
+      "title": "Commit the resurrection with an explanation",
+      "why": "A file coming back from the dead deserves a message saying why. Six months from now, `--diff-filter=A` will find this commit and the reader will get the whole story.",
+      "commands": ["git add -A", "git commit -m \"Restore migration script: still needed for v1 customers\"", "git log --oneline --diff-filter=A -- legacy/migrate.py"],
+      "expect": "Two 'added' events now — the original and the restoration."
+    }
+  ],
+  "verify": [
+    { "cmd": "cat legacy/migrate.py", "contains": ["migrate_v1_to_v2", "def verify"],
+      "label": "the deleted file was recovered in full",
+      "hint": "find the deleting commit with --diff-filter=D, restore from its parent with ^" },
+    { "cmd": "git log --oneline --diff-filter=A -- legacy/migrate.py", "lines": 2,
+      "label": "history records both the original add and the restoration",
+      "hint": "commit the restored file so the recovery is documented" },
+    { "cmd": "git log --oneline --diff-filter=D -- legacy/migrate.py", "lines": 1,
+      "label": "the deletion is still in history — you added to it, you did not rewrite it" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "`git log -- <deleted path>` needs the exact path as it was. If the file was renamed first, add `--follow` or search with `--diff-filter=R`.",
+    "The deleting commit does not contain the file. Always restore from `<sha>^`, never `<sha>`.",
+    "`--diff-filter` letters: A added, D deleted, M modified, R renamed, C copied. Lowercase excludes instead of includes.",
+    "On a merge commit, diff-filter results can be empty because git compares against the first parent by default."
+  ],
+  "cheatsheet": [
+    ["git log --diff-filter=A -- <path>", "the commit that created a file"],
+    ["git log --diff-filter=D -- <path>", "the commit that deleted it"],
+    ["git log --diff-filter=R --find-renames -- <path>", "renames"],
+    ["git show <sha>^:<path>", "the file as it was before that commit"],
+    ["git restore --source=<sha>^ -- <path>", "bring a deleted file back"],
+    ["git log --all --oneline -- <path>", "search every branch for a path"]
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  "id": "staging-partial-hunks",
+  "title": "Commit half a file: splitting one messy edit into two clean commits",
+  "category": "staging",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 15,
+  "summary": "You fixed a bug and reformatted the file in the same sitting. Split them apart with hunk-level staging so the bug fix is reviewable on its own.",
+  "concepts": ["git add -p", "hunks", "git apply --cached", "atomic commits", "diff --staged"],
+  "mental_model": "The index is not file-granular. `git add -p` walks the diff hunk by hunk and lets you stage some and not others — the same mechanism as `git apply --cached` on a hand-edited patch, which is what this scenario uses so it can run without an interactive prompt.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "dosing.py", "content": "import time\n\nRATE = 1.0\n\n\ndef dose(ml):\n    return ml * RATE\n\n\ndef wait():\n    time.sleep(1)\n\n\ndef log(msg):\n    print(msg)\n" } },
+    { "commit": { "message": "Add dosing module" } },
+    { "write": { "path": "dosing.py", "content": "import time\n\nRATE = 1.0\n\n\ndef dose(ml):\n    if ml <= 0:\n        raise ValueError('dose must be positive')\n    return ml * RATE\n\n\ndef wait():\n    time.sleep(1)\n\n\ndef log(msg):\n    print('[dosing] ' + str(msg))\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Look at the two unrelated changes",
+      "why": "One diff, two ideas: a validation fix near the top, a logging-format tweak at the bottom. Committing them together means a reviewer cannot approve one without the other.",
+      "commands": ["git diff", "git diff --stat"],
+      "expect": "Two separate hunks in one file."
+    },
+    {
+      "title": "Count the hunks git sees",
+      "why": "`@@` markers delimit hunks. Git will happily stage them independently — the file is not the unit of staging, the hunk is.",
+      "commands": ["git diff -U1"],
+      "expect": "Two @@ blocks — the units git can stage separately."
+    },
+    {
+      "title": "Stage only the bug fix",
+      "why": "`git add -p` would ask 'Stage this hunk?' for each one and you would answer y then n. Here the same thing happens non-interactively: cut the first hunk into a patch and apply it to the index only.",
+      "actions": [
+        { "write": { "path": "fix.patch", "content": "--- a/dosing.py\n+++ b/dosing.py\n@@ -4,6 +4,8 @@\n \n \n def dose(ml):\n+    if ml <= 0:\n+        raise ValueError('dose must be positive')\n     return ml * RATE\n \n \n" } },
+        { "run": "git apply --cached fix.patch" }
+      ],
+      "commands": ["git status --short", "git diff --staged"],
+      "expect": "Only the validation lines are staged. The logging change is untouched.",
+      "verify": [
+        { "cmd": "git diff --staged", "contains": "raise ValueError",
+          "label": "the bug fix is staged", "hint": "git apply --cached fix.patch" },
+        { "cmd": "git diff --staged", "not_contains": "[dosing]",
+          "label": "the logging change is NOT staged" }
+      ]
+    },
+    {
+      "title": "Commit the fix on its own",
+      "why": "This commit does exactly one thing. It can be reviewed in ten seconds, cherry-picked to a release branch, or reverted without dragging cosmetics along.",
+      "commands": ["git commit -m \"Reject non-positive doses\"", "git show --stat HEAD", "git status --short"],
+      "verify": [
+        { "cmd": "git show HEAD", "contains": "raise ValueError", "label": "the fix commit exists" },
+        { "cmd": "git show HEAD", "not_contains": "[dosing]",
+          "label": "it contains only the fix" }
+      ]
+    },
+    {
+      "title": "Commit the rest",
+      "why": "What remains in the working tree is the logging tweak. One more commit and the same edit session has produced two honest commits instead of one muddled one.",
+      "actions": [ { "delete": "fix.patch" } ],
+      "commands": ["git add dosing.py", "git commit -m \"Prefix dosing log lines\"", "git log --oneline"]
+    },
+    {
+      "title": "Check the split is real",
+      "why": "Each commit touches one concern. `git log -p` reads like a story rather than a dump, and `git bisect` can actually localise a regression to one of them.",
+      "commands": ["git log --oneline -p -2 --stat"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "the edit became two commits on top of the original",
+      "hint": "stage the fix hunk alone, commit, then commit the rest" },
+    { "cmd": "git show HEAD~1", "contains": "raise ValueError",
+      "label": "the first commit holds the bug fix" },
+    { "cmd": "git show HEAD~1", "not_contains": "[dosing]",
+      "label": "…and nothing else", "hint": "stage only the first hunk before committing" },
+    { "cmd": "git show HEAD", "contains": "[dosing]",
+      "label": "the second commit holds the logging change" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "the working tree is clean, patch file included" }
+  ],
+  "pitfalls": [
+    "`git add -p` keys: y stage, n skip, s split into smaller hunks, e edit the hunk by hand, q quit. `s` and `e` are what make it powerful.",
+    "After partial staging, the working-tree file still has everything. Never assume the tests you ran locally reflect what you staged — `git stash -k` runs them against the staged version.",
+    "`git commit -a` after partial staging swallows the hunks you deliberately left out.",
+    "`git restore -p` and `git stash -p` use the same hunk picker for discarding and stashing."
+  ],
+  "cheatsheet": [
+    ["git add -p", "walk the diff hunk by hunk"],
+    ["git add -p <file>", "…for one file"],
+    ["git diff --staged", "confirm what you actually picked"],
+    ["git stash -k", "stash the unstaged part and test what you staged"],
+    ["git restore -p <file>", "discard selected hunks"],
+    ["git apply --cached <patch>", "stage a patch directly — what -p does underneath"]
+  ]
+}

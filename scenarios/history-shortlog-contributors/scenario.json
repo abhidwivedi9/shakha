@@ -1,0 +1,111 @@
+{
+  "id": "history-shortlog-contributors",
+  "title": "Who wrote this codebase, and what did they touch?",
+  "category": "history",
+  "level": "beginner",
+  "order": 5,
+  "duration_min": 10,
+  "summary": "Answer the questions you get on day one at a new job: who are the main contributors, which files change most, and who should review this pull request.",
+  "concepts": ["shortlog -sn", "--author", "log --numstat", "mailmap", "path-scoped history"],
+  "mental_model": "Every 'who owns this' question is a `git log` with a different grouping. shortlog groups by author; numstat groups by file. Neither needs a plugin or a website.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Calibrate dosing rate" } },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.35\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Validate dose input" } },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Add temperature alerts" } },
+    { "cwd": "teammate", "run": "git push -q origin main" },
+    { "run": "git pull -q --rebase origin main" },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } },
+    { "commit": { "message": "Document the project" } }
+  ],
+  "steps": [
+    {
+      "title": "Count commits per author",
+      "why": "`shortlog -sn` is the fastest orientation there is: summary, numbered, sorted. Two people, six commits, and you already know who to ask about what.",
+      "commands": ["git shortlog -sn HEAD", "git shortlog -sne HEAD"],
+      "expect": "Priya with four commits, Learner with two.",
+      "verify": [
+        { "cmd": "git shortlog -sn HEAD", "contains": ["Priya", "Learner"],
+          "label": "both contributors are listed" }
+      ]
+    },
+    {
+      "title": "See what each person actually wrote",
+      "why": "Without `-s`, shortlog groups the commit subjects under each author. This is the two-minute version of reading someone's entire contribution history.",
+      "commands": ["git shortlog HEAD"],
+      "expect": "Subjects grouped by author."
+    },
+    {
+      "title": "Find who owns a specific file",
+      "why": "Combine an author filter with a path. This is the honest way to pick a reviewer: not who is senior, but who has actually edited this file before.",
+      "commands": ["git shortlog -sn HEAD -- dosing.py", "git log --oneline --author=Priya -- dosing.py"],
+      "expect": "dosing.py is overwhelmingly Priya's file.",
+      "verify": [
+        { "cmd": "git shortlog -sn HEAD -- dosing.py", "contains": "Priya",
+          "label": "the owner of dosing.py is identifiable" }
+      ]
+    },
+    {
+      "title": "Which files churn the most",
+      "why": "`--numstat` prints added/removed line counts per file per commit. Feed it to sort and you have a churn report — the files that change constantly are usually where the bugs are.",
+      "commands": ["git log --numstat --format=\"\" -- .", "sh -c \"git log --numstat --format='' | awk 'NF==3 {a[$3]+=$1+$2} END {for (f in a) print a[f], f}' | sort -rn\""],
+      "expect": "dosing.py at the top: most edited, most risk."
+    },
+    {
+      "title": "Activity over time",
+      "why": "`--date=short` with a format string gives you commits per day without leaving the terminal. Useful for 'when was this project actually being worked on'.",
+      "commands": ["git log --pretty=format:'%ad %an %s' --date=short", "git log --pretty=format:'%ad' --date=short | sort | uniq -c"]
+    },
+    {
+      "title": "Fix split identities with a mailmap",
+      "why": "Real repositories have the same person under three emails. `.mailmap` maps them to one canonical identity, and every git command that reports authors honours it — shortlog, blame and log included.",
+      "actions": [
+        { "write": { "path": ".mailmap", "content": "Priya Sharma <priya@shakha.local> Priya <priya@shakha.local>\n" } }
+      ],
+      "commands": ["git shortlog -sne HEAD", "git add .mailmap", "git commit -m \"Add mailmap\""],
+      "expect": "Priya now appears under her canonical name.",
+      "verify": [
+        { "cmd": "git shortlog -sne HEAD", "contains": "Priya Sharma",
+          "label": "the mailmap rewrote the displayed identity",
+          "hint": "write .mailmap mapping the canonical name to the commit email" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git shortlog -sn HEAD", "contains": ["Priya", "Learner"],
+      "label": "both contributors show in the summary" },
+    { "cmd": "git ls-files", "contains": ".mailmap",
+      "label": "a mailmap is committed",
+      "hint": "write .mailmap and commit it — every git tool honours it" },
+    { "cmd": "git shortlog -sne HEAD", "contains": "Priya Sharma",
+      "label": "the canonical identity is applied" },
+    { "cmd": "git shortlog -sn HEAD -- dosing.py", "contains": "Priya",
+      "label": "file ownership is identifiable per path" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "Commit counts are a terrible performance metric and an excellent orientation tool. Use them to find people, never to rank them.",
+    "`git shortlog` with no revision reads from stdin when stdin is not a terminal -- in scripts and CI it silently prints nothing. Always pass HEAD.",
+    "shortlog reads authors, not committers. After a rebase the committer changes but the author does not — which is the correct behaviour.",
+    "`.mailmap` lives at the repository root and is honoured by log, blame and shortlog automatically. No config needed.",
+    "Path-scoped shortlog only sees commits that touched the path — a file created by a rename may look younger than it is."
+  ],
+  "cheatsheet": [
+    ["git shortlog -sn HEAD", "commits per author, sorted"],
+    ["git shortlog -sne HEAD", "…with emails, to spot split identities"],
+    ["git shortlog -sn HEAD -- <path>", "who owns this file"],
+    ["git shortlog HEAD", "each author's commit subjects"],
+    ["git log --numstat", "lines added/removed per file"],
+    ["git log --author=X --oneline", "one person's commits"],
+    [".mailmap", "map several identities onto one person"]
+  ]
+}

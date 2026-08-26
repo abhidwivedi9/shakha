@@ -1,0 +1,108 @@
+{
+  "id": "history-ranges",
+  "title": "Two dots or three: the range syntax that decides your release notes",
+  "category": "history",
+  "level": "intermediate",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "A..B and A...B mean different things for log and yet another thing for diff. Get them wrong and your changelog silently omits half the work.",
+  "concepts": ["A..B", "A...B", "merge base", "--left-right", "^exclusion", "diff vs log semantics"],
+  "mental_model": "For log: `A..B` is 'in B, not in A'. `A...B` is the symmetric difference — in either, not both. For diff it is reversed in spirit: `A..B` compares endpoints, `A...B` compares B against the merge base. Log and diff genuinely disagree, which is the trap.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git tag v1.0" },
+    { "run": "git switch -q -c feature/dosing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Calibrate dosing rate" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "app.py", "content": "print('v1.1')\n" } },
+    { "commit": { "message": "Bump banner" } },
+    { "write": { "path": "security.py", "content": "TOKEN_TTL = 3600\n" } },
+    { "commit": { "message": "Add token expiry" } }
+  ],
+  "steps": [
+    {
+      "title": "See the fork you are about to describe",
+      "why": "main and feature/dosing both moved after v1.0. Every range question below is really 'which side of this fork do I mean'.",
+      "commands": ["git log --oneline --graph --all --decorate"]
+    },
+    {
+      "title": "Two dots: what is on the branch and not on main",
+      "why": "`main..feature/dosing` reads as 'commits reachable from feature/dosing but not from main'. This is the correct range for 'what would this pull request add'.",
+      "commands": ["git log --oneline main..feature/dosing"],
+      "expect": "Two commits — only the branch's own work.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/dosing", "lines": 2,
+          "label": "two-dot range isolates the branch's commits" }
+      ]
+    },
+    {
+      "title": "Reverse it to find what you are missing",
+      "why": "Flipping the operands answers the other question: what has main gained that the branch has not seen? This is the range that tells you whether you need to rebase.",
+      "commands": ["git log --oneline feature/dosing..main"],
+      "expect": "Two commits from main."
+    },
+    {
+      "title": "Three dots: everything on either side",
+      "why": "`A...B` is the symmetric difference. With `--left-right`, `<` marks commits on the left side and `>` on the right — the clearest picture of a divergence you can get in one command.",
+      "commands": ["git log --oneline --left-right main...feature/dosing"],
+      "expect": "Four commits, each tagged < or >.",
+      "verify": [
+        { "cmd": "git log --oneline main...feature/dosing", "lines": 4,
+          "label": "three-dot range shows both sides" }
+      ]
+    },
+    {
+      "title": "Now the trap: diff means the opposite thing",
+      "why": "`git diff main..feature/dosing` compares the two tips, so it includes main's changes as removals. `git diff main...feature/dosing` compares against the merge base — the branch's work alone. Code review tools use three dots; people typing by hand usually use two, and get a diff full of unrelated deletions.",
+      "commands": ["git diff --stat main..feature/dosing", "git diff --stat main...feature/dosing"],
+      "expect": "Two dots mentions security.py and app.py. Three dots mentions only dosing.py."
+    },
+    {
+      "title": "Exclusion syntax, for more than two branches",
+      "why": "`^main` means 'not reachable from main' and composes with any number of refs. `A..B` is just shorthand for `^A B`.",
+      "commands": ["git log --oneline feature/dosing ^main", "git log --oneline --all ^v1.0"]
+    },
+    {
+      "title": "Write the release notes",
+      "why": "Everything since the last tag, no merges, one line each. This is a real changelog command, and it is the two-dot form because you want commits, not a diff.",
+      "commands": ["git log --oneline --no-merges v1.0..main", "git log --pretty=format:'- %s' --no-merges v1.0..main"],
+      "verify": [
+        { "cmd": "git log --oneline v1.0..main", "lines": 2,
+          "label": "the changelog range covers exactly the two post-tag commits" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..feature/dosing", "lines": 2,
+      "label": "you can name just the branch's commits" },
+    { "cmd": "git log --oneline main...feature/dosing", "lines": 4,
+      "label": "…and both sides of the divergence" },
+    { "cmd": "git diff --name-only main...feature/dosing", "equals": "dosing.py",
+      "label": "three-dot diff shows only what the branch changed",
+      "hint": "this is the diff a pull request displays" },
+    { "cmd": "git diff --name-only main..feature/dosing", "contains": "security.py",
+      "label": "two-dot diff also drags in main's own changes — the trap" },
+    { "cmd": "git log --oneline v1.0..main", "lines": 2,
+      "label": "everything since the last tag" }
+  ],
+  "pitfalls": [
+    "log and diff use the dots oppositely. If a range surprises you, ask which of the two commands you are running.",
+    "`git diff A..B` in a pull-request context shows deletions that nobody made — they are just changes on the base branch.",
+    "Ranges need both refs to exist locally. `origin/main..main` is only accurate after a fetch.",
+    "`--left-right` without `--oneline` is hard to read. The two flags belong together."
+  ],
+  "cheatsheet": [
+    ["git log A..B", "commits in B that are not in A"],
+    ["git log A...B --left-right", "both sides of a divergence, marked"],
+    ["git log B ^A", "the same as A..B, composable with more refs"],
+    ["git diff A...B", "what B changed since it forked — the PR diff"],
+    ["git diff A..B", "raw comparison of two tips"],
+    ["git log --no-merges v1.0..main", "changelog since the last release"],
+    ["git rev-list --count A..B", "just the number, for scripts"]
+  ]
+}

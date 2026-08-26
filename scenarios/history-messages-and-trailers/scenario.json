@@ -1,0 +1,108 @@
+{
+  "id": "history-messages-and-trailers",
+  "title": "Search commit messages, and make them machine-readable",
+  "category": "history",
+  "level": "intermediate",
+  "order": 7,
+  "duration_min": 12,
+  "summary": "Find every commit mentioning a ticket, then learn the trailer convention that turns commit messages into structured data your release tooling can read.",
+  "concepts": ["log --grep", "--all-match", "--invert-grep", "commit trailers", "interpret-trailers", "%(trailers)"],
+  "mental_model": "A commit message is a subject line, a blank line, a body, and then trailers — `Key: value` lines at the end. Git treats trailers as a real format, so `Fixes:` and `Co-authored-by:` are parseable rather than just conventional.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add pump control\" -m \"Drives the circulation pump from the schedule table.\" -m \"Refs: ABH-101\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "run": "git commit -q -a -m \"Fix pump stall at low RPM\" -m \"The controller stalled below 900 RPM on cold starts.\" -m \"Fixes: ABH-204\nReviewed-by: Priya <priya@shakha.local>\"" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add temperature alerts\" -m \"Fixes: ABH-207\"" },
+    { "write": { "path": "README.md", "content": "# Reef\n" } },
+    { "commit": { "message": "Update readme" } }
+  ],
+  "steps": [
+    {
+      "title": "Search the message text",
+      "why": "`--grep` matches the whole message, subject and body. This is how you find 'that commit about the pump stall' when you cannot remember its sha.",
+      "commands": ["git log --oneline --grep=stall", "git log --oneline --grep=pump"],
+      "expect": "One match for stall, two for pump."
+    },
+    {
+      "title": "Find everything for a ticket",
+      "why": "Ticket ids in messages become searchable forever. This one command replaces trawling a project-management tool for 'what shipped for ABH-204'.",
+      "commands": ["git log --oneline --grep=ABH-204", "git log --grep=ABH-204 --format='%h %s%n%b'"],
+      "verify": [
+        { "cmd": "git log --oneline --grep=ABH-204", "lines": 1,
+          "label": "the ticket's commit is findable by id" }
+      ]
+    },
+    {
+      "title": "Combine and invert filters",
+      "why": "Multiple `--grep` options are OR by default; `--all-match` makes them AND. `--invert-grep` finds everything that does NOT match — useful for spotting commits with no ticket reference at all.",
+      "commands": ["git log --oneline --grep=pump --grep=alerts", "git log --oneline --grep=ABH --invert-grep"],
+      "expect": "The invert search shows the two commits with no ticket id — the ones your process missed."
+    },
+    {
+      "title": "Read the trailers as data",
+      "why": "`%(trailers)` in a format string extracts the structured lines. `:key=Fixes` pulls out one specific trailer — which is exactly how a changelog generator finds what a release fixed.",
+      "commands": ["git log --format='%h %s | %(trailers:key=Fixes,valueonly)' -4", "git log --format='%h %(trailers:key=Reviewed-by,valueonly)' -4"],
+      "expect": "Ticket ids and reviewers extracted cleanly, with blanks where there are none."
+    },
+    {
+      "title": "Add a trailer to a new commit properly",
+      "why": "`--trailer` appends a correctly formatted trailer rather than you hand-typing it into the body. Git handles the blank-line rules, which are the part people get wrong.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\nPH_THRESHOLD = 8.6\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Alert on pH drift\" --trailer \"Fixes: ABH-301\" --trailer \"Co-authored-by: Priya <priya@shakha.local>\"" }
+      ],
+      "commands": ["git log -1 --format='%B'", "git log -1 --format='%(trailers:key=Fixes,valueonly)'"],
+      "verify": [
+        { "cmd": "git log -1 --format=%(trailers:key=Fixes,valueonly)", "contains": "ABH-301",
+          "label": "the new commit carries a parseable Fixes trailer",
+          "hint": "git commit --trailer \"Fixes: ABH-301\"" }
+      ]
+    },
+    {
+      "title": "Generate the release notes",
+      "why": "Filter to commits with a Fixes trailer, print subject and ticket. This is a complete changelog pipeline in one command, with no dependencies and no extra tooling.",
+      "commands": ["git log --format='- %s (%(trailers:key=Fixes,valueonly))' --grep='Fixes:' "],
+      "expect": "A bulleted list with ticket ids — paste-ready."
+    },
+    {
+      "title": "Check a message before committing it",
+      "why": "`interpret-trailers --parse` reads any message and prints only its trailers. This is what a commit-msg hook uses to enforce 'every commit must reference a ticket'.",
+      "commands": ["sh -c 'git log -1 --format=%B | git interpret-trailers --parse'"],
+      "expect": "Just the Key: value lines, ready for a script to validate."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log -1 --format=%(trailers:key=Fixes,valueonly)", "contains": "ABH-301",
+      "label": "your commit has a machine-readable Fixes trailer",
+      "hint": "git commit --trailer \"Fixes: ABH-301\"" },
+    { "cmd": "git log -1 --format=%(trailers:key=Co-authored-by,valueonly)", "contains": "Priya",
+      "label": "…and credits the co-author in the standard format",
+      "hint": "git commit --trailer \"Co-authored-by: Name <email>\"" },
+    { "cmd": "git log --oneline --grep=ABH", "lines": 4,
+      "label": "four commits reference a ticket and are findable by id" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "A trailer must be in the last paragraph of the message, with no blank line inside the block. One stray blank line and git stops parsing them.",
+    "`--grep` is a regex by default. Search for `ABH-204` and the hyphen is literal, but `.` and `*` are not — use `--fixed-strings` when in doubt.",
+    "`Co-authored-by:` is a GitHub convention built on git's trailer format. Git parses it; the attribution on the website is GitHub's own layer.",
+    "Squashing commits concatenates their messages, which usually breaks the trailer block. Re-add trailers after a squash."
+  ],
+  "cheatsheet": [
+    ["git log --grep=<pattern>", "search commit messages"],
+    ["git log --grep=A --grep=B --all-match", "commits matching both"],
+    ["git log --grep=<p> --invert-grep", "commits that do NOT match"],
+    ["git commit --trailer \"Fixes: X\"", "append a properly formatted trailer"],
+    ["git log --format='%(trailers:key=Fixes,valueonly)'", "extract one trailer"],
+    ["git interpret-trailers --parse", "read trailers out of any message"],
+    ["git log --format='- %s' v1.0..HEAD", "changelog since a tag"]
+  ]
+}

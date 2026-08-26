@@ -1,0 +1,104 @@
+{
+  "id": "history-pickaxe-search",
+  "title": "Find the commit that deleted a line nobody can explain",
+  "category": "history",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "A config key vanished and nobody remembers why. Use the pickaxe to search the content of every commit in history, not just the current files.",
+  "concepts": ["log -S", "log -G", "log -L", "git grep <rev>", "--all --source"],
+  "mental_model": "`grep` searches the files you have. `log -S` searches every version of every file that ever existed, and reports the commits where the count of a string changed. It is the only tool that finds deletions.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "config.py", "content": "RETRY_LIMIT = 3\nTIMEOUT_SECONDS = 30\nDEBUG = False\n" } },
+    { "commit": { "message": "Add configuration" } },
+    { "write": { "path": "client.py", "content": "from config import RETRY_LIMIT, TIMEOUT_SECONDS\n\n\ndef call():\n    for _ in range(RETRY_LIMIT):\n        pass\n" } },
+    { "commit": { "message": "Add API client" } },
+    { "write": { "path": "config.py", "content": "RETRY_LIMIT = 3\nTIMEOUT_SECONDS = 30\nDEBUG = False\nCIRCUIT_BREAKER_THRESHOLD = 5\n" } },
+    { "commit": { "message": "Add circuit breaker threshold" } },
+    { "write": { "path": "client.py", "content": "from config import RETRY_LIMIT, TIMEOUT_SECONDS, CIRCUIT_BREAKER_THRESHOLD\n\n\ndef call():\n    for _ in range(RETRY_LIMIT):\n        pass\n\n\ndef breaker_open(failures):\n    return failures >= CIRCUIT_BREAKER_THRESHOLD\n" } },
+    { "commit": { "message": "Wire up the circuit breaker" } },
+    { "write": { "path": "config.py", "content": "RETRY_LIMIT = 5\nTIMEOUT_SECONDS = 30\nDEBUG = False\n" } },
+    { "write": { "path": "client.py", "content": "from config import RETRY_LIMIT, TIMEOUT_SECONDS\n\n\ndef call():\n    for _ in range(RETRY_LIMIT):\n        pass\n" } },
+    { "commit": { "message": "Simplify retry handling" } },
+    { "write": { "path": "README.md", "content": "# Client\n" } },
+    { "commit": { "message": "Add readme" } }
+  ],
+  "steps": [
+    {
+      "title": "Confirm it is really gone",
+      "why": "Plain grep searches the working tree. It finds nothing, which proves only that the setting is not here *now* — not what happened to it.",
+      "commands": ["git grep CIRCUIT_BREAKER_THRESHOLD", "git grep -c RETRY_LIMIT"],
+      "expect": "Nothing for the circuit breaker; exit code 1 is a normal 'no matches'."
+    },
+    {
+      "title": "Search every commit that ever existed",
+      "why": "`-S` is the pickaxe: it lists every commit where the number of occurrences of the string changed. Three come back — it was introduced in the config, used in the client, then removed from both. Scoping with `-- config.py` narrows it to the two that touched the setting itself.",
+      "commands": ["git log --oneline -S CIRCUIT_BREAKER_THRESHOLD", "git log --oneline -S CIRCUIT_BREAKER_THRESHOLD -- config.py"],
+      "expect": "Three commits unscoped, two when limited to config.py.",
+      "verify": [
+        { "cmd": "git log --oneline -S CIRCUIT_BREAKER_THRESHOLD -- config.py", "lines": 2,
+          "label": "the pickaxe found the add and the delete in config.py" }
+      ]
+    },
+    {
+      "title": "Read the commit that removed it",
+      "why": "Now you have a culprit and a message: 'Simplify retry handling'. The diff shows the deletion was collateral damage from an unrelated change — the exact thing nobody remembers doing.",
+      "commands": ["git log -1 -S CIRCUIT_BREAKER_THRESHOLD --format=%H", "git log -p -1 -S CIRCUIT_BREAKER_THRESHOLD"]
+    },
+    {
+      "title": "-S versus -G",
+      "why": "`-S` counts occurrences: it misses a commit that moved a line without changing the count. `-G` matches the diff text itself with a regex, so it catches modifications too. Use -G when -S comes back empty.",
+      "commands": ["git log --oneline -S RETRY_LIMIT", "git log --oneline -G RETRY_LIMIT"],
+      "expect": "-G returns more commits, because it sees changes that kept the count the same."
+    },
+    {
+      "title": "Follow a specific line through time",
+      "why": "`log -L` takes a line range and a file, and prints every commit that changed those lines with the patch. It is the most precise history tool git has.",
+      "commands": ["git log -L 1,3:config.py --oneline"],
+      "expect": "Each commit that touched the first three lines, with the diff inline."
+    },
+    {
+      "title": "Grep inside an old commit",
+      "why": "`git grep <pattern> <rev>` searches the tree of that commit, not your working files. Here the rev is the *parent* of the removal — written `<sha>^` — which is where the setting last existed.",
+      "commands": ["sh -c 'git grep CIRCUIT_BREAKER_THRESHOLD $(git log -1 -S CIRCUIT_BREAKER_THRESHOLD --format=%H)^'"],
+      "expect": "The setting, found in the commit just before it was deleted."
+    },
+    {
+      "title": "Restore what was lost",
+      "why": "The parent of the deleting commit is the last good state, so `<sha>^` is the source to restore from. That caret is the whole trick, and it works for any 'undo this one deletion' problem.",
+      "actions": [
+        { "run": "sh -c 'git restore --source=$(git log -1 -S CIRCUIT_BREAKER_THRESHOLD --format=%H)^ config.py'" }
+      ],
+      "commands": ["cat config.py", "git status --short"],
+      "verify": [
+        { "cmd": "cat config.py", "contains": "CIRCUIT_BREAKER_THRESHOLD",
+          "label": "the lost setting is back in the working tree" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat config.py", "contains": "CIRCUIT_BREAKER_THRESHOLD",
+      "label": "the deleted setting was found in history and restored",
+      "hint": "git log -S CIRCUIT_BREAKER_THRESHOLD finds the deleting commit; restore --source=<sha>^ brings it back" },
+    { "cmd": "git log --oneline -S CIRCUIT_BREAKER_THRESHOLD -- config.py", "lines": 2,
+      "label": "the pickaxe still shows the add and the delete in config.py" },
+    { "cmd": "git log --oneline", "lines": 6,
+      "label": "history is intact — you searched it, you did not rewrite it",
+      "hint": "restoring a file is a working-tree change, not a history change" }
+  ],
+  "pitfalls": [
+    "`-S` takes a string by default, not a regex. Add `--pickaxe-regex` if you need patterns.",
+    "`-S` finds only commits where the *count* changed. A line moved between files is invisible to it — reach for `-G`.",
+    "Both are slow on huge repositories. Narrow with `-- <path>` or `--since` when you can.",
+    "`git grep` searches the working tree; `git grep <rev>` searches that commit. Forgetting the rev is the most common mistake here."
+  ],
+  "cheatsheet": [
+    ["git log -S <string>", "commits where the occurrence count changed"],
+    ["git log -G <regex>", "commits whose diff matches the pattern"],
+    ["git log -L <start>,<end>:<file>", "history of specific lines"],
+    ["git log -p -S <string>", "…with the diffs, to read what happened"],
+    ["git grep <pattern> <rev>", "search inside a historical commit"],
+    ["git grep <pattern> $(git rev-list --all)", "search every commit — slow, thorough"]
+  ]
+}

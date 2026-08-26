@@ -1,0 +1,99 @@
+{
+  "id": "history-log-formats",
+  "title": "Make git log answer the question you actually asked",
+  "category": "history",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "The default git log is nearly useless on a real repository. Learn the eight flags that turn it into a precision instrument, and build the one view you will use every day.",
+  "concepts": ["--oneline", "--graph", "--stat", "-p", "--pretty=format", "--since", "--author", "-n"],
+  "mental_model": "`git log` is a filter plus a formatter over the commit graph. Every flag either narrows which commits are listed, or changes how each one is printed. Learn one of each and the rest compose.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Add application entrypoint" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "run": "git switch -q -c feature/alerts" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "commit": { "message": "Add temperature alerts" } },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\nPH_THRESHOLD = 8.6\n" } },
+    { "commit": { "message": "Alert on pH drift too" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "commit": { "message": "Raise pump speed" } },
+    { "run": "git merge -q --no-ff -m \"Merge alerting feature\" feature/alerts" },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } },
+    { "commit": { "message": "Document the project" } }
+  ],
+  "steps": [
+    {
+      "title": "The default, and why nobody uses it",
+      "why": "Six lines per commit, no shape, no files. On a repository with ten thousand commits this tells you almost nothing. Every flag below exists because of this output.",
+      "run": "git log -3"
+    },
+    {
+      "title": "One line each, with the shape",
+      "why": "`--oneline --graph --decorate --all` is the workhorse. It shows every branch, where they diverged, where they merged, and which refs point where — in one screen.",
+      "run": "git log --oneline --graph --decorate --all",
+      "expect": "A visible fork and merge, with branch names marked."
+    },
+    {
+      "title": "What changed, without the noise",
+      "why": "`--stat` adds a file summary per commit; `-p` shows the full patch. Use --stat to scan, -p when you have narrowed it down to one or two commits.",
+      "commands": ["git log --stat -2", "git log -p -1"]
+    },
+    {
+      "title": "Filter by who, when and what",
+      "why": "These three narrow a huge history fast. `--since` accepts human phrases, `--author` matches a substring, and `-- <path>` limits to a file. They compose freely.",
+      "commands": ["git log --oneline --author=Learner", "git log --oneline --since=\"1 year ago\"", "git log --oneline -- pump.py"],
+      "expect": "The last one shows only the two commits touching pump.py."
+    },
+    {
+      "title": "Hide the merge noise, or show only it",
+      "why": "`--no-merges` gives the human-written commits; `--first-parent` follows only the main line, treating each merge as a single event. On a busy repository this is the difference between readable and unreadable.",
+      "commands": ["git log --oneline --no-merges", "git log --oneline --first-parent", "git log --oneline --merges"]
+    },
+    {
+      "title": "Build your own format",
+      "why": "`--pretty=format:` takes placeholders: %h short hash, %s subject, %an author, %ar relative date, %d refs. This is how every fancy log alias you have seen is built.",
+      "commands": ["git log --pretty=format:'%h %ad %an: %s' --date=short -5"],
+      "expect": "A compact table you could paste into a release note."
+    },
+    {
+      "title": "Save it as the alias you will actually use",
+      "why": "Nobody types forty characters twice. Alias the combination you like and it becomes muscle memory.",
+      "commands": ["git config --global alias.lg \"log --oneline --graph --decorate --all\"", "git lg"],
+      "verify": [
+        { "cmd": "git config --global --get alias.lg", "not_empty": true,
+          "label": "the log alias is saved", "hint": "git config --global alias.lg \"log --oneline --graph --decorate --all\"" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --global --get alias.lg", "contains": "--graph",
+      "label": "you saved a graph log alias",
+      "hint": "git config --global alias.lg \"log --oneline --graph --decorate --all\"" },
+    { "cmd": "git log --oneline --first-parent", "lines": 5,
+      "label": "first-parent history is five commits — the merge counts once" },
+    { "cmd": "git log --oneline", "lines": 7,
+      "label": "full history is seven commits, including both sides of the merge" },
+    { "cmd": "git log --oneline -- pump.py", "lines": 2,
+      "label": "path-limited history isolates the two pump commits" }
+  ],
+  "pitfalls": [
+    "`git log <path>` without `--` breaks if a branch shares the name of a file. Always write `git log -- <path>`.",
+    "`--since` filters by commit date, which rebasing changes. For 'what shipped last week', tags are more reliable than dates.",
+    "`--graph` output is only meaningful with `--all` or an explicit set of branches — otherwise you see one line and no shape.",
+    "`-p` on a merge commit shows nothing by default. Use `-m` or `--first-parent -p` to see merge diffs."
+  ],
+  "cheatsheet": [
+    ["git log --oneline --graph --decorate --all", "the everyday view"],
+    ["git log --stat", "which files each commit touched"],
+    ["git log -p -1", "the full patch of one commit"],
+    ["git log --no-merges --author=X", "one person's real commits"],
+    ["git log --since=\"2 weeks ago\"", "recent work"],
+    ["git log --first-parent", "the main line only, merges as single events"],
+    ["git log --pretty=format:'%h %an %ar %s'", "your own layout"]
+  ]
+}

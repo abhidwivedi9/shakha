@@ -1,0 +1,113 @@
+{
+  "id": "history-blame",
+  "title": "Blame without blaming the person who reformatted the file",
+  "category": "history",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "Every line points at a style cleanup instead of the change you care about. Learn the flags that see through reformatting and code movement, then make the fix permanent with a blame-ignore file.",
+  "concepts": ["git blame", "-w", "-C", "-L", "--ignore-rev", "blame.ignoreRevsFile"],
+  "mental_model": "Blame reports the last commit that touched each line. A repo-wide cleanup touches every line, so it becomes the answer to every question. `-w`, `-C` and ignore-revs each tell blame a different category of commit to look straight through.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    rate = 1.0\n    return ml * rate\n\n\ndef schedule(items):\n    return sorted(items)\n" } },
+    { "commit": { "message": "Add dosing module" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    rate = 1.35\n    return ml * rate\n\n\ndef schedule(items):\n    return sorted(items)\n" } },
+    { "commit": { "message": "Correct the dosing rate after calibration" } },
+    { "write": { "path": "dosing.py", "content": "def dose( ml ):\n    dose_rate = 1.35\n    return ml * dose_rate\n\n\ndef schedule( items ):\n    return sorted( items )\n" } },
+    { "commit": { "message": "Reformat and rename locals to house style" } }
+  ],
+  "steps": [
+    {
+      "title": "Blame the file and get a useless answer",
+      "why": "Every line says 'Reformat and rename locals to house style'. The commit that actually changed the dosing rate from 1.0 to 1.35 is invisible, because a later cosmetic commit rewrote the same lines.",
+      "commands": ["git blame dosing.py"],
+      "expect": "One commit hash on every line — the cleanup."
+    },
+    {
+      "title": "Ignore whitespace-only differences",
+      "why": "`-w` tells blame that a line differing only in whitespace was not really changed. The `def` lines snap back to their real authors. Line 2 does not, because renaming `rate` to `dose_rate` is a genuine content change — whitespace flags cannot help there.",
+      "commands": ["git blame -w dosing.py"],
+      "expect": "Better at the top and bottom, still wrong on the two lines that were renamed."
+    },
+    {
+      "title": "Name the cosmetic commit and skip it entirely",
+      "why": "`--ignore-rev` makes blame look straight through one specific commit, as if it had never happened, and attribute each line to whatever touched it before. You are not guessing — you are telling git which commit was noise.",
+      "commands": ["sh -c 'git blame --ignore-rev $(git rev-parse HEAD) -L 2,3 dosing.py'"],
+      "expect": "Lines 2 and 3 now attribute to 'Correct the dosing rate after calibration' — the answer you wanted.",
+      "verify": [
+        { "cmd": "sh -c \"git blame --ignore-rev $(git rev-parse HEAD) --line-porcelain -L 2,2 dosing.py | grep '^summary'\"",
+          "contains": "Correct the dosing rate",
+          "label": "ignoring the cleanup reveals the real change",
+          "hint": "git blame --ignore-rev <cleanup-sha> dosing.py" }
+      ]
+    },
+    {
+      "title": "Make it permanent, for everyone",
+      "why": "A `.git-blame-ignore-revs` file lists cosmetic commits by full sha. Point `blame.ignoreRevsFile` at it and every blame in the repo skips them automatically — GitHub reads the same file, so the web UI agrees.",
+      "actions": [
+        { "run": "sh -c 'git rev-parse HEAD > .git-blame-ignore-revs'" },
+        { "run": "git config blame.ignoreRevsFile .git-blame-ignore-revs" }
+      ],
+      "commands": ["cat .git-blame-ignore-revs", "git blame -L 2,3 dosing.py"],
+      "expect": "Plain `git blame`, no flags, now gives the useful answer.",
+      "verify": [
+        { "cmd": "sh -c \"git blame --line-porcelain -L 2,2 dosing.py | grep '^summary'\"",
+          "contains": "Correct the dosing rate",
+          "label": "plain blame is now correct for everyone",
+          "hint": "write the cleanup sha into .git-blame-ignore-revs and set blame.ignoreRevsFile" }
+      ]
+    },
+    {
+      "title": "Blame one range instead of a whole file",
+      "why": "`-L` limits blame to a line range, and takes a function name too: `-L :dose:dosing.py`. On a thousand-line file this is the difference between an answer and a wall of text.",
+      "commands": ["git blame -L 1,3 dosing.py", "git blame -L :dose:dosing.py"]
+    },
+    {
+      "title": "Track code that moved between files",
+      "why": "`-C` detects lines copied or moved from another file; repeating it makes git search harder. Without it, moving a function to a new file makes every line look brand new and blames the person who did the move.",
+      "actions": [
+        { "run": "git mv dosing.py chemistry.py" },
+        { "run": "git commit -q -m \"Move dosing into chemistry module\"" }
+      ],
+      "commands": ["git blame -L 2,3 chemistry.py", "git blame -C -C -L 2,3 chemistry.py"],
+      "expect": "Lines still attribute to the calibration commit rather than to the move."
+    },
+    {
+      "title": "Commit the ignore file so the team gets it",
+      "why": "The file is shared through the repo; the config line is per-clone. Document both, or the next person will rediscover this the hard way.",
+      "commands": ["git add -A", "git commit -m \"Ignore the reformat commit in blame\"", "git log --oneline"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "everything is committed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "contains": ".git-blame-ignore-revs",
+      "label": "the blame-ignore file is committed for the whole team",
+      "hint": "git rev-parse <cleanup> > .git-blame-ignore-revs, then commit it" },
+    { "cmd": "git config --get blame.ignoreRevsFile", "equals": ".git-blame-ignore-revs",
+      "label": "blame is configured to use it",
+      "hint": "git config blame.ignoreRevsFile .git-blame-ignore-revs" },
+    { "cmd": "sh -c \"git blame -C -C --line-porcelain -L 2,2 chemistry.py | grep '^summary'\"",
+      "contains": "Correct the dosing rate",
+      "label": "blame sees through the cleanup AND the file move",
+      "hint": "-C follows code across files; the ignore file handles the cleanup" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "Blame answers 'which commit last touched this line', not 'who is responsible'. A rename, a reformat or a merge can all take the credit.",
+    "The ignore-revs file must contain full 40-character shas. Short ones are rejected outright.",
+    "`blame.ignoreRevsFile` is repo config, so it does not travel with a clone. Put the setup line in your contributing guide.",
+    "For 'when did this line get deleted', blame cannot help — the line is not there any more. Use `git log -S` instead."
+  ],
+  "cheatsheet": [
+    ["git blame <file>", "last commit per line"],
+    ["git blame -w <file>", "ignore whitespace-only changes"],
+    ["git blame -C -C <file>", "follow lines moved between files"],
+    ["git blame -L 40,60 <file>", "just this range"],
+    ["git blame -L :func:<file>", "just this function"],
+    ["git blame --ignore-rev <sha> <file>", "see through one cosmetic commit"],
+    ["git config blame.ignoreRevsFile .git-blame-ignore-revs", "make it the default"]
+  ]
+}
