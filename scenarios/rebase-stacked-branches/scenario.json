@@ -1,0 +1,124 @@
+{
+  "id": "rebase-stacked-branches",
+  "title": "Stacked pull requests: rebase the bottom without orphaning the top",
+  "category": "rebase",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 15,
+  "summary": "Three dependent branches stacked on each other. Rebase the bottom one onto main and watch the stack fall apart — then do it again with --update-refs, which fixes the whole stack in one pass.",
+  "concepts": ["stacked branches", "rebase --update-refs", "rebase.updateRefs", "branch pointers", "orphaned branches"],
+  "mental_model": "Each branch in a stack points at a specific commit. Rebasing the bottom branch creates new commits, so the branches above still point at the *old* ones. `--update-refs` moves every branch pointer that was inside the rebased range.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/1-model" },
+    { "write": { "path": "model.py", "content": "class Tank:\n    pass\n" } },
+    { "commit": { "message": "Add the tank model" } },
+    { "run": "git switch -q -c feature/2-api" },
+    { "write": { "path": "api.py", "content": "def get_tank():\n    return None\n" } },
+    { "commit": { "message": "Add the tank API" } },
+    { "run": "git switch -q -c feature/3-ui" },
+    { "write": { "path": "ui.py", "content": "def render():\n    return '<div/>'\n" } },
+    { "commit": { "message": "Add the tank UI" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "README.md", "content": "# Controller\n" } },
+    { "commit": { "message": "Unrelated work on main" } }
+  ],
+  "steps": [
+    {
+      "title": "See the stack",
+      "why": "Three branches, each one commit on top of the last. This is how large changes get reviewed in pieces — and it is fragile in exactly one way, which the next step demonstrates.",
+      "commands": ["git log --oneline --graph --all --decorate", "git branch -vv"],
+      "expect": "A single line of commits with three branch labels at different points."
+    },
+    {
+      "title": "Rebase the bottom branch the naive way",
+      "why": "main moved, so feature/1-model needs rebasing. This works — but watch what it does to the two branches sitting above it.",
+      "commands": ["git switch feature/1-model", "git rebase main", "git log --oneline --graph --all --decorate"],
+      "expect": "feature/1-model moves onto main. The other two are still hanging off the OLD commit."
+    },
+    {
+      "title": "See the damage",
+      "why": "feature/2-api and feature/3-ui now point at commits whose parent is the pre-rebase model commit. The stack has forked: rebasing them individually now means resolving the same conflicts once per branch.",
+      "commands": ["git log --oneline --graph --all --decorate", "git merge-base feature/1-model feature/2-api", "git log --oneline main..feature/3-ui"],
+      "expect": "feature/3-ui is three commits from main, and the model commit appears twice in the graph — once rebased, once not.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/3-ui", "lines": 3,
+          "label": "the upper branches still carry the old, unrebased commits" }
+      ]
+    },
+    {
+      "title": "Undo it and start over",
+      "why": "`reset --hard ORIG_HEAD` puts the bottom branch back, restoring the stack. Now the whole thing can be done properly in a single command.",
+      "commands": ["git reset --hard ORIG_HEAD", "git log --oneline --graph --all --decorate"],
+      "expect": "The original single-line stack, intact.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/3-ui", "lines": 3,
+          "label": "the stack is restored" }
+      ]
+    },
+    {
+      "title": "Rebase the whole stack at once",
+      "why": "Run the rebase from the TOP branch with `--update-refs`. Git replays all three commits and moves every branch pointer that was inside the range — the entire stack lands on main, correctly ordered.",
+      "actions": [
+        { "run": "git switch -q feature/3-ui" },
+        { "run": "git rebase --update-refs main" }
+      ],
+      "commands": ["git log --oneline --graph --all --decorate", "git branch -vv"],
+      "expect": "All three branches now sit on top of main, each still one commit apart.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/1-model", "lines": 1,
+          "label": "the bottom branch is one commit above main" },
+        { "cmd": "git log --oneline main..feature/3-ui", "lines": 3,
+          "label": "the top branch is three commits above main, stack intact" }
+      ]
+    },
+    {
+      "title": "Confirm the stack is still a stack",
+      "why": "Each branch should contain exactly one more commit than the one below it. If that holds, every pull request in the stack still shows a one-commit diff.",
+      "commands": ["git log --oneline feature/1-model..feature/2-api", "git log --oneline feature/2-api..feature/3-ui", "git rev-list --count main..feature/2-api"],
+      "verify": [
+        { "cmd": "git log --oneline feature/1-model..feature/2-api", "lines": 1,
+          "label": "each branch is exactly one commit above the previous" }
+      ]
+    },
+    {
+      "title": "Make it automatic",
+      "why": "`rebase.updateRefs true` applies it to every rebase. If you work in stacks at all, this is the single most valuable git config line of the last few years.",
+      "commands": ["git config --global rebase.updateRefs true", "git config --global --get rebase.updateRefs"],
+      "verify": [
+        { "cmd": "git config --global --get rebase.updateRefs", "equals": "true",
+          "label": "update-refs is on by default",
+          "hint": "git config --global rebase.updateRefs true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..feature/1-model", "lines": 1,
+      "label": "the bottom of the stack sits directly on main",
+      "hint": "git rebase --update-refs main, run from the top branch" },
+    { "cmd": "git log --oneline feature/1-model..feature/2-api", "lines": 1,
+      "label": "the middle branch is one commit above the bottom" },
+    { "cmd": "git log --oneline feature/2-api..feature/3-ui", "lines": 1,
+      "label": "the top branch is one commit above the middle" },
+    { "cmd": "git log --oneline main..feature/3-ui", "lines": 3,
+      "label": "the whole stack rebased as a unit, nothing orphaned" },
+    { "cmd": "git config --global --get rebase.updateRefs", "equals": "true",
+      "label": "the config is set so this never has to be remembered" }
+  ],
+  "pitfalls": [
+    "`--update-refs` only moves branches whose tips are inside the rebased range. A branch pointing at a commit outside it is left alone, correctly.",
+    "Force-pushing a rebased stack must be done for every branch, and `--force-with-lease` is essential — each one has a stale remote counterpart.",
+    "Merging the bottom pull request first, then rebasing, is the usual workflow. Merging the top one first leaves the others describing changes that are already in.",
+    "Without `--update-refs` you can still fix a broken stack: rebase each branch with `--onto`, bottom-up. It just costs one conflict resolution per branch."
+  ],
+  "cheatsheet": [
+    ["git rebase --update-refs <base>", "rebase and move every branch in the range"],
+    ["git config --global rebase.updateRefs true", "make it the default"],
+    ["git branch -vv", "see where every branch tip actually is"],
+    ["git log --oneline A..B", "confirm each stack level is one commit"],
+    ["git rebase --onto <new> <old-base> <branch>", "repair a stack by hand"],
+    ["git push --force-with-lease", "publish a rebased branch safely"]
+  ]
+}

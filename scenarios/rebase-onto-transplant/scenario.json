@@ -1,0 +1,111 @@
+{
+  "id": "rebase-onto-transplant",
+  "title": "You branched off the wrong branch. Transplant your work.",
+  "category": "rebase",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "Your feature sits on top of a colleague's unmerged branch. Move just your three commits onto main, leaving theirs behind, with rebase --onto.",
+  "concepts": ["rebase --onto", "three-argument rebase", "upstream vs branch", "replaying commits", "new shas"],
+  "mental_model": "`git rebase --onto <newbase> <upstream> <branch>` reads as: take the commits in `upstream..branch`, and replay them on `newbase`. The plain two-argument form is just this with newbase and upstream being the same thing.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c colleague/refactor" },
+    { "write": { "path": "core.py", "content": "class Core:\n    pass\n" } },
+    { "commit": { "message": "Colleague: start the core refactor" } },
+    { "write": { "path": "core.py", "content": "class Core:\n    def run(self):\n        pass\n" } },
+    { "commit": { "message": "Colleague: add run method" } },
+    { "run": "git switch -q -c feature/mine" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Calibrate dosing" } },
+    { "write": { "path": "dosing_test.py", "content": "def test_dose():\n    assert True\n" } },
+    { "commit": { "message": "Test dosing" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "README.md", "content": "# Controller\n" } },
+    { "commit": { "message": "Add readme on main" } },
+    { "run": "git switch -q feature/mine" }
+  ],
+  "steps": [
+    {
+      "title": "See the problem",
+      "why": "Your three commits sit on top of two of your colleague's, which are not going to be merged for weeks. Open a pull request now and it shows five commits and their refactor.",
+      "commands": ["git log --oneline --graph --all --decorate", "git log --oneline main..feature/mine"],
+      "expect": "Five commits between main and your branch — only three are yours."
+    },
+    {
+      "title": "Name the range you want to move",
+      "why": "`colleague/refactor..feature/mine` is exactly your three commits. Getting this range right is the whole job; the rebase itself is mechanical.",
+      "commands": ["git log --oneline colleague/refactor..feature/mine"],
+      "expect": "Exactly three commits, all yours.",
+      "verify": [
+        { "cmd": "git log --oneline colleague/refactor..feature/mine", "lines": 3,
+          "label": "the range names only your commits" }
+      ]
+    },
+    {
+      "title": "Transplant them onto main",
+      "why": "Read it as: new base is main, take everything after colleague/refactor up to feature/mine, replay it there. The colleague's two commits are simply not in the range, so they stay behind.",
+      "commands": ["git rebase --onto main colleague/refactor feature/mine", "git log --oneline --graph --all --decorate"],
+      "expect": "Your three commits now sit directly on main's readme commit.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/mine", "lines": 3,
+          "label": "the branch is now three commits ahead of main",
+          "hint": "git rebase --onto main colleague/refactor feature/mine" }
+      ]
+    },
+    {
+      "title": "Confirm what came and what did not",
+      "why": "core.py is gone from your branch entirely; your dosing files are all present. The pull request now shows three commits and one concern.",
+      "commands": ["ls", "git diff --stat main...feature/mine", "git log --oneline"],
+      "verify": [
+        { "cmd": "git diff --name-only main...feature/mine", "not_contains": "core.py",
+          "label": "the colleague's refactor did not come along" }
+      ]
+    },
+    {
+      "title": "Note that every sha changed",
+      "why": "Replaying a commit onto a different parent produces a different commit object. The content is identical, the identity is not — which is why rebasing shared branches causes pain.",
+      "commands": ["git reflog -8", "git log --oneline --all --decorate"],
+      "expect": "The reflog shows the pre-rebase positions, with different shas."
+    },
+    {
+      "title": "The two-argument form is the same thing",
+      "why": "`git rebase main` means `--onto main main HEAD`. Once you see that, the three-argument form stops looking exotic — it is the general case and the short form is the special one.",
+      "commands": ["git switch -q -c feature/second main", "git log --oneline -1", "git switch feature/mine"]
+    },
+    {
+      "title": "Drop commits from the middle instead",
+      "why": "`--onto` can also cut commits out: `git rebase --onto HEAD~3 HEAD~2` replays the last two commits onto a base three back, discarding the one in between. Same mechanism, different range.",
+      "commands": ["git log --oneline -4", "git rev-list --count main..feature/mine"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..feature/mine", "lines": 3,
+      "label": "your three commits now sit directly on main",
+      "hint": "git rebase --onto main colleague/refactor feature/mine" },
+    { "cmd": "git diff --name-only main...feature/mine", "not_contains": "core.py",
+      "label": "the colleague's unmerged refactor was left behind" },
+    { "cmd": "git diff --name-only main...feature/mine", "contains": ["dosing.py", "dosing_test.py"],
+      "label": "all of your own work came across" },
+    { "cmd": "git log --oneline colleague/refactor", "lines": 3,
+      "label": "the colleague's branch is untouched — you moved a copy, not their commits" }
+  ],
+  "pitfalls": [
+    "The argument order is newbase, upstream, branch — and the middle one is the commit *before* the first one you want to move. Off-by-one here silently drops or duplicates a commit.",
+    "Always check `git log --oneline <upstream>..<branch>` before rebasing. If that list is not exactly what you want to move, the rebase will not be either.",
+    "Every replayed commit gets a new sha. If the branch was pushed, you need `--force-with-lease` and a word with anyone who pulled it.",
+    "`git rebase --abort` works at any point mid-rebase and restores the original branch exactly."
+  ],
+  "cheatsheet": [
+    ["git rebase --onto <new> <upstream> <branch>", "replay upstream..branch onto new"],
+    ["git log --oneline <upstream>..<branch>", "preview exactly what will move"],
+    ["git rebase <upstream>", "shorthand for --onto <upstream> <upstream> HEAD"],
+    ["git rebase --onto HEAD~3 HEAD~2", "drop the commit in the middle"],
+    ["git rebase --abort", "restore the branch as it was"],
+    ["git reflog", "find the pre-rebase tip if you need to start over"]
+  ]
+}

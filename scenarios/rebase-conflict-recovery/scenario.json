@@ -1,0 +1,136 @@
+{
+  "id": "rebase-conflict-recovery",
+  "title": "A rebase stopped mid-flight. Continue, skip, or abort?",
+  "category": "rebase",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 14,
+  "summary": "Rebase replays commits one at a time, so it can stop several times in one run. Learn what state you are actually in, and which of the three exits you want.",
+  "concepts": ["rebase --continue", "--skip", "--abort", "detached HEAD during rebase", "ORIG_HEAD"],
+  "mental_model": "A rebase is a loop: check out the new base, then apply each commit in turn. When one fails to apply, the loop pauses with that commit half-applied and a conflicted index. You are on a detached HEAD, mid-loop — not on your branch.",
+  "danger": "Running `git commit` instead of `git rebase --continue` during a pause creates an extra commit and leaves the rebase running. Always use --continue.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "limits.py", "content": "MAX_RPM = 2000\nMIN_RPM = 400\nTIMEOUT = 30\n" } },
+    { "commit": { "message": "Add limits" } },
+    { "run": "git switch -q -c feature/limits" },
+    { "write": { "path": "limits.py", "content": "MAX_RPM = 2500\nMIN_RPM = 400\nTIMEOUT = 30\n" } },
+    { "commit": { "message": "Raise the RPM ceiling" } },
+    { "write": { "path": "limits.py", "content": "MAX_RPM = 2500\nMIN_RPM = 600\nTIMEOUT = 30\n" } },
+    { "commit": { "message": "Raise the RPM floor" } },
+    { "write": { "path": "notes.md", "content": "Testing higher limits.\n" } },
+    { "commit": { "message": "Note the limit experiments" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "limits.py", "content": "MAX_RPM = 3000\nMIN_RPM = 400\nTIMEOUT = 30\n" } },
+    { "commit": { "message": "Raise the ceiling further after bench testing" } },
+    { "run": "git switch -q feature/limits" }
+  ],
+  "steps": [
+    {
+      "title": "See what will collide",
+      "why": "Both branches edited MAX_RPM. Rebasing replays your three commits one by one onto main's version, so the collision happens on the first commit — and only that one.",
+      "commands": ["git log --oneline --graph --all --decorate", "git diff main...feature/limits -- limits.py"]
+    },
+    {
+      "title": "Start the rebase and get stopped",
+      "why": "Git applies 'Raise the RPM ceiling' onto main's 3000 and cannot decide. Read the output carefully: it names the commit it was applying, which is the thing people skip past.",
+      "commands": ["git rebase main", "git status"],
+      "expect": "CONFLICT, and status says 'interactive rebase in progress' with the current step."
+    },
+    {
+      "title": "Understand where you are standing",
+      "why": "You are on a detached HEAD partway through the replay. Your branch ref still points at the old, unrebased tip — nothing has been lost, which is why abort is always available.",
+      "commands": ["git status --short", "git rev-parse --abbrev-ref HEAD", "git log --oneline -2", "cat .git/rebase-merge/done"],
+      "expect": "HEAD, not feature/limits — and a done file listing the steps completed so far."
+    },
+    {
+      "title": "Bail out completely, to prove you can",
+      "why": "`--abort` unwinds everything: the branch, the index, the working tree. Knowing this exit exists makes the whole operation far less frightening.",
+      "commands": ["git rebase --abort", "git status --short", "git log --oneline --graph --all --decorate"],
+      "expect": "Exactly the state you started in.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/limits",
+          "label": "abort put you back on your branch" },
+        { "cmd": "git log --oneline main..feature/limits", "lines": 3,
+          "label": "…with all three commits unrebased" }
+      ]
+    },
+    {
+      "title": "Start again and resolve it properly",
+      "why": "3000 from main is higher than your 2500 and was bench tested, so main wins here. Stage the resolution — but do not commit.",
+      "actions": [
+        { "run": "git rebase main" },
+        { "write": { "path": "limits.py", "content": "MAX_RPM = 3000\nMIN_RPM = 400\nTIMEOUT = 30\n" } },
+        { "run": "git add limits.py" }
+      ],
+      "commands": ["git status --short", "git diff --staged"],
+      "expect": "Nothing conflicted, changes staged, rebase still in progress."
+    },
+    {
+      "title": "Continue — and get stopped a second time",
+      "why": "Two things happen at once here. Your first commit now contributes nothing (you took main's value), so git drops it silently as empty. Then it moves to commit 2 of 3 and hits a *different* conflict on the same file. A rebase stops once per problem commit, not once per rebase — the single biggest surprise for people used to merges.",
+      "commands": ["git rebase --continue", "git status --short", "cat limits.py"],
+      "expect": "Rebasing (2/3), a fresh CONFLICT, and the floor commit now half-applied."
+    },
+    {
+      "title": "Resolve the second conflict and finish",
+      "why": "This commit raises the floor to 600, which is still what you want — main's ceiling and your floor are not in competition. Resolve to keep both, stage, and continue. Note you never run `git commit`: `--continue` does it, preserving the original message.",
+      "actions": [
+        { "write": { "path": "limits.py", "content": "MAX_RPM = 3000\nMIN_RPM = 600\nTIMEOUT = 30\n" } },
+        { "run": "git add limits.py" },
+        { "run": "git rebase --continue" }
+      ],
+      "commands": ["git log --oneline --graph --all --decorate", "cat limits.py", "git status --short"],
+      "expect": "Rebase complete, branch reattached, two commits on top of main.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/limits",
+          "label": "the rebase finished and reattached your branch" }
+      ]
+    },
+    {
+      "title": "Read the result, and note your undo",
+      "why": "Three commits went in, two came out: the redundant one was dropped as empty. `ORIG_HEAD` still holds the pre-rebase tip, so `git reset --hard ORIG_HEAD` puts everything back even now that the rebase has finished.",
+      "commands": ["git log --oneline main..feature/limits", "cat limits.py", "git log --oneline -1 ORIG_HEAD"],
+      "verify": [
+        { "cmd": "git log --oneline main..feature/limits", "lines": 2,
+          "label": "two commits replayed, the emptied one dropped" }
+      ]
+    },
+    {
+      "title": "The third exit: --skip",
+      "why": "`--skip` throws away the commit currently being applied and moves on. Git effectively did that for you when the patch became empty. Reach for it deliberately only when a commit is genuinely redundant — never to make a conflict you do not understand go away.",
+      "commands": ["git log --oneline --graph", "git rev-list --count main..feature/limits"],
+      "expect": "Nothing to do here — this step is the note, not an action."
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/limits",
+      "label": "you are back on your branch, rebase finished" },
+    { "cmd": "git log --oneline main..feature/limits", "lines": 2,
+      "label": "the emptied commit was dropped, the other two replayed",
+      "hint": "resolve each stop with git add then git rebase --continue" },
+    { "cmd": "cat limits.py", "contains": ["MAX_RPM = 3000", "MIN_RPM = 600"],
+      "label": "main's ceiling and your floor both survived",
+      "hint": "resolve in favour of the bench-tested value, keep your own change" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "no rebase left in progress and a clean tree" },
+    { "cmd": "git log --oneline main", "lines": 2,
+      "label": "main was never modified — a rebase moves your branch, not the base" }
+  ],
+  "pitfalls": [
+    "During a pause you are on a detached HEAD. `git commit` there makes a stray commit and confuses the rebase — always `git rebase --continue`.",
+    "A rebase can stop once per commit. Finishing one conflict does not mean you are done; read the output each time.",
+    "`--skip` throws the whole commit away, not just the conflicted part. Use it only for genuinely redundant commits.",
+    "`git rebase --abort` before it finishes, `git reset --hard ORIG_HEAD` after. Both are complete undos.",
+    "Turn on `rerere.enabled` and repeated rebases of the same branch stop re-asking the same questions."
+  ],
+  "cheatsheet": [
+    ["git rebase <base>", "replay your commits onto base"],
+    ["git status", "tells you which step of the rebase you are on"],
+    ["git rebase --continue", "after staging a resolution"],
+    ["git rebase --skip", "drop the commit being applied"],
+    ["git rebase --abort", "unwind the whole rebase"],
+    ["git reset --hard ORIG_HEAD", "undo a rebase that already finished"],
+    ["cat .git/rebase-merge/done", "which steps have completed"]
+  ]
+}

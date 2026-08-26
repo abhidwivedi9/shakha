@@ -1,0 +1,120 @@
+{
+  "id": "rebase-split-a-commit",
+  "title": "Split one enormous commit into three",
+  "category": "rebase",
+  "level": "expert",
+  "order": 5,
+  "duration_min": 16,
+  "summary": "A commit three back does four unrelated things. Stop the rebase on it, unwind it into the working tree, and commit the pieces separately.",
+  "concepts": ["rebase -i edit", "reset HEAD^", "rebase --continue", "atomic commits", "detached HEAD mid-rebase"],
+  "mental_model": "`edit` in a rebase todo means: apply this commit, then stop and hand me the shell. `git reset HEAD^` at that point removes the commit but leaves its changes in your working tree — now you can commit them in as many pieces as you like before continuing.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/overhaul" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "write": { "path": "pump.py", "content": "def start(rpm):\n    print('pump', rpm)\n" } },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "commit": { "message": "Add dosing, pump and alerts" } },
+    { "write": { "path": "README.md", "content": "# Controller\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Bump banner" } }
+  ],
+  "steps": [
+    {
+      "title": "Find the commit that does too much",
+      "why": "Three unrelated modules in one commit. It cannot be reverted selectively, cannot be cherry-picked to a release branch, and `git bisect` can only tell you 'one of these three things broke it'. Before any rewrite, drop a branch on the current tip — it costs nothing and gives you a name to compare against afterwards.",
+      "actions": [
+        { "run": "git branch pre-split-backup" }
+      ],
+      "commands": ["git log --oneline main..HEAD", "git show --stat HEAD~2"],
+      "expect": "Three files in a single commit, and a backup branch on the tip."
+    },
+    {
+      "title": "Stop the rebase on that commit",
+      "why": "Marking it `edit` tells rebase to apply it and then pause. The todo editor is scripted here to change the first line from pick to edit — exactly what you would type in the editor.",
+      "actions": [
+        { "run": "git rebase -i main",
+          "env": { "GIT_SEQUENCE_EDITOR": "sed -i '1s/^pick/edit/'" } }
+      ],
+      "commands": ["git status", "git log --oneline -2"],
+      "expect": "Stopped at the first commit, on a detached HEAD, with a clean tree."
+    },
+    {
+      "title": "Unwind the commit without losing the work",
+      "why": "`reset HEAD^` moves back one commit and leaves the changes unstaged in the working tree. Nothing is deleted — the commit is dissolved into raw edits you can now re-commit however you like.",
+      "commands": ["git reset HEAD^", "git status --short", "ls"],
+      "expect": "The three files are back as untracked changes, and the commit is gone.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "dosing.py",
+          "label": "the commit's contents are loose in the working tree",
+          "hint": "git reset HEAD^ during the edit pause" }
+      ]
+    },
+    {
+      "title": "Commit the first piece",
+      "why": "Stage one file, commit it with a message about that one thing. The discipline is simply: one concern, one commit, and now you have the chance to apply it retroactively.",
+      "commands": ["git add dosing.py", "git commit -m \"Add dosing calculation\"", "git status --short"]
+    },
+    {
+      "title": "And the other two",
+      "why": "Same again, twice. Three commits now exist where one did, each independently reviewable, revertible and cherry-pickable.",
+      "commands": ["git add pump.py", "git commit -m \"Add pump driver\"", "git add alerts.py", "git commit -m \"Add temperature alerts\"", "git log --oneline -4"]
+    },
+    {
+      "title": "Resume the rebase",
+      "why": "`--continue` replays the remaining commits on top of your new ones. Because the tree content is identical to what it was, nothing conflicts.",
+      "commands": ["git rebase --continue", "git log --oneline main..HEAD", "git status --short"],
+      "expect": "Five commits on the branch, and HEAD reattached to feature/overhaul.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/overhaul",
+          "label": "the rebase finished cleanly" },
+        { "cmd": "git log --oneline main..HEAD", "lines": 5,
+          "label": "one commit became three, and the other two replayed" }
+      ]
+    },
+    {
+      "title": "Prove the content is unchanged",
+      "why": "The whole point of a history rewrite is that the end state is identical — only the path there is clearer. Diffing against the backup branch proves it. Note that ORIG_HEAD is no use here: the `reset` you ran mid-rebase overwrote it, which is exactly why the backup branch was worth making.",
+      "commands": ["git diff --stat pre-split-backup HEAD", "git show --stat HEAD~4"],
+      "expect": "An empty diff: same tree, better history.",
+      "verify": [
+        { "cmd": "git diff --name-only pre-split-backup HEAD", "empty": true,
+          "label": "the final tree is byte-for-byte what it was before the split" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..HEAD", "lines": 5,
+      "label": "the branch now has five commits instead of three",
+      "hint": "mark the fat commit edit, reset HEAD^, commit the pieces, then --continue" },
+    { "cmd": "git log --pretty=%s main..HEAD", "contains": ["Add dosing calculation", "Add pump driver", "Add temperature alerts"],
+      "label": "each module got its own commit" },
+    { "cmd": "git show --stat --name-only --format= HEAD~4", "equals": "dosing.py",
+      "label": "the first split commit touches exactly one file",
+      "hint": "stage one file at a time before committing" },
+    { "cmd": "git diff --name-only pre-split-backup HEAD", "empty": true,
+      "label": "the resulting tree is identical to before the rewrite",
+      "hint": "branch the tip before rewriting, then diff against it" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "no rebase in progress, clean tree" }
+  ],
+  "pitfalls": [
+    "`git reset HEAD^` during a rebase is `--mixed`: changes stay in the working tree. `--hard` there would destroy the commit you are trying to split.",
+    "Commit the pieces before `--continue`. Continuing with uncommitted changes aborts with a complaint, or worse, folds them into the next commit.",
+    "For a file that needs splitting internally rather than by file, `git add -p` at this pause is the tool — the same hunk picker, applied retroactively.",
+    "Every commit after the split gets a new sha. If the branch is shared, coordinate before force-pushing."
+  ],
+  "cheatsheet": [
+    ["git rebase -i <base>", "open the todo list"],
+    ["edit <sha>", "apply the commit then stop for you"],
+    ["git reset HEAD^", "dissolve the commit into working-tree changes"],
+    ["git add <file> && git commit", "re-commit in pieces"],
+    ["git add -p", "split within a single file"],
+    ["git rebase --continue", "replay the rest"],
+    ["git branch backup", "name the tip before any rewrite"],
+    ["git diff backup HEAD", "prove the tree did not change"]
+  ]
+}

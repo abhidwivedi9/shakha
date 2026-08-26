@@ -1,0 +1,127 @@
+{
+  "id": "rebase-autosquash",
+  "title": "Review feedback without a branch full of 'address comments' commits",
+  "category": "rebase",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "Three rounds of review feedback, each fixing a different earlier commit. Use --fixup and --autosquash so the branch stays exactly as reviewable as it was on day one.",
+  "concepts": ["commit --fixup", "commit --squash", "rebase --autosquash", "rebase.autoSquash config", "--autostash"],
+  "mental_model": "`git commit --fixup=<sha>` writes a commit whose subject is literally `fixup! <that commit's subject>`. `rebase --autosquash` reads those subjects, reorders each fixup to sit under its target, and marks it fixup in the todo list. The convention is the whole mechanism.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/dosing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Add dosing calculation" } },
+    { "write": { "path": "pump.py", "content": "def start(rpm):\n    print('pump', rpm)\n" } },
+    { "commit": { "message": "Add pump driver" } },
+    { "write": { "path": "schedule.py", "content": "TIMES = ['08:00', '20:00']\n" } },
+    { "commit": { "message": "Add dosing schedule" } }
+  ],
+  "steps": [
+    {
+      "title": "The branch as the reviewer sees it",
+      "why": "Three clean commits, one concern each. This is the state you want to still be in after review — not three commits plus five commits of corrections.",
+      "commands": ["git log --oneline main..HEAD"]
+    },
+    {
+      "title": "Feedback: the dosing calculation needs validation",
+      "why": "`--fixup=<sha>` marks this commit as belonging to an earlier one. It commits normally, so nothing is lost if you stop here — but the subject line carries the instruction for later.",
+      "actions": [
+        { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('dose must be positive')\n    return ml * 1.35\n" } },
+        { "run": "git add dosing.py" },
+        { "run": "sh -c 'git commit -q --fixup=$(git log --format=%H --grep=\"Add dosing calculation\" -1)'" }
+      ],
+      "commands": ["git log --oneline main..HEAD"],
+      "expect": "A commit literally titled 'fixup! Add dosing calculation'.",
+      "verify": [
+        { "cmd": "git log --pretty=%s main..HEAD", "contains": "fixup! Add dosing calculation",
+          "label": "the fixup commit is labelled against its target",
+          "hint": "git commit --fixup=<sha of the dosing commit>" }
+      ]
+    },
+    {
+      "title": "Feedback: the pump driver needs a guard too",
+      "why": "A second fixup, aimed at a different earlier commit. They can arrive in any order and target any commit on the branch — autosquash sorts it out later.",
+      "actions": [
+        { "write": { "path": "pump.py", "content": "def start(rpm):\n    if rpm <= 0:\n        raise ValueError('rpm must be positive')\n    print('pump', rpm)\n" } },
+        { "run": "git add pump.py" },
+        { "run": "sh -c 'git commit -q --fixup=$(git log --format=%H --grep=\"Add pump driver\" -1)'" }
+      ],
+      "commands": ["git log --oneline main..HEAD"],
+      "expect": "Five commits: three real, two fixups pointing backwards."
+    },
+    {
+      "title": "Feedback: the schedule commit needs a better message",
+      "why": "`--squash` is the sibling of `--fixup`: it folds in the same way but keeps both messages for you to edit. Use it when the original message was wrong, not just the code.",
+      "actions": [
+        { "write": { "path": "schedule.py", "content": "TIMES = ['08:00', '20:00']\nTIMEZONE = 'Europe/London'\n" } },
+        { "run": "git add schedule.py" },
+        { "run": "sh -c 'git commit -q --squash=$(git log --format=%H --grep=\"Add dosing schedule\" -1) -m \"also pin the timezone\"'" }
+      ],
+      "commands": ["git log --oneline main..HEAD"],
+      "expect": "Six commits, three of them marked fixup! or squash!."
+    },
+    {
+      "title": "Preview what autosquash will do",
+      "why": "The todo list is what rebase would open in your editor. Each fixup has been moved directly beneath its target and marked. Reading this before running is how you build trust in the command.",
+      "commands": ["git log --oneline main..HEAD --reverse"],
+      "expect": "The raw order — fixups at the end, before autosquash rearranges them."
+    },
+    {
+      "title": "Run the autosquash",
+      "why": "`--autosquash` reorders and folds everything in one pass. Here the todo editor is scripted to accept the arrangement unchanged, which is exactly what you would do by saving and quitting.",
+      "actions": [
+        { "run": "git rebase -i --autosquash main",
+          "env": { "GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "true" } }
+      ],
+      "commands": ["git log --oneline main..HEAD", "cat dosing.py", "cat pump.py"],
+      "expect": "Back to three commits, each containing its own fix.",
+      "verify": [
+        { "cmd": "git log --oneline main..HEAD", "lines": 3,
+          "label": "the branch is back to three commits" },
+        { "cmd": "git log --pretty=%s main..HEAD", "not_contains": ["fixup!", "squash!"],
+          "label": "no fixup markers survived" }
+      ]
+    },
+    {
+      "title": "Make it the default",
+      "why": "`rebase.autoSquash true` means plain `git rebase -i main` always honours fixups. `rebase.autoStash true` stashes and restores uncommitted work around a rebase. Both remove a step you would otherwise forget.",
+      "commands": ["git config --global rebase.autoSquash true", "git config --global rebase.autoStash true", "git config --global --get-regexp rebase | cat"],
+      "verify": [
+        { "cmd": "git config --global --get rebase.autoSquash", "equals": "true",
+          "label": "autosquash is on by default now" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..HEAD", "lines": 3,
+      "label": "the branch is three reviewable commits again",
+      "hint": "git commit --fixup=<sha> for each round, then git rebase -i --autosquash main" },
+    { "cmd": "git log --pretty=%s main..HEAD", "not_contains": ["fixup!", "squash!"],
+      "label": "no review-noise commits remain" },
+    { "cmd": "cat dosing.py", "contains": "raise ValueError",
+      "label": "the dosing fix landed inside the dosing commit" },
+    { "cmd": "cat pump.py", "contains": "rpm must be positive",
+      "label": "the pump fix landed inside the pump commit" },
+    { "cmd": "git config --global --get rebase.autoSquash", "equals": "true",
+      "label": "autosquash is configured as the default" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "`--fixup` needs the target commit's sha. `git log --oneline` then copy, or use `--fixup=:/some words` to match by message.",
+    "Autosquash only works when the target commit is inside the rebase range. Fixing up a commit already on main does nothing.",
+    "Push the fixup commits during review so the reviewer can see the individual responses, then autosquash just before merge. Squashing early hides what you changed.",
+    "`fixup!` matching is by subject line. Reword the target commit and its fixups stop finding it."
+  ],
+  "cheatsheet": [
+    ["git commit --fixup=<sha>", "a commit that will fold into an earlier one"],
+    ["git commit --fixup=:/text", "target by message instead of sha"],
+    ["git commit --squash=<sha>", "fold in, but keep both messages"],
+    ["git rebase -i --autosquash <base>", "arrange and apply them all"],
+    ["git config --global rebase.autoSquash true", "make it automatic"],
+    ["git config --global rebase.autoStash true", "stash and restore around a rebase"]
+  ]
+}
