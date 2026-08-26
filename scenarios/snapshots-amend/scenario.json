@@ -1,0 +1,88 @@
+{
+  "id": "snapshots-amend",
+  "title": "Amend: fix the commit you just made",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 2,
+  "duration_min": 10,
+  "summary": "Forgot a file, typo'd the message, committed on the wrong identity. Amend fixes all three — and quietly replaces the commit with a different one, which matters the moment it has been pushed.",
+  "concepts": ["--amend", "commit identity", "new sha", "--no-edit", "reflog safety"],
+  "mental_model": "Amend does not edit a commit. Commits are immutable. It builds a brand-new commit from the same parent and moves the branch to it; the old one becomes unreferenced. That is why the sha changes.",
+  "danger": "Amending a commit you have already pushed rewrites shared history. Your next push will be rejected, and forcing it will disrupt anyone who pulled.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('start')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "write": { "path": "dosing_test.py", "content": "def test_dose():\n    assert True\n" } },
+    { "run": "git add dosing.py" },
+    { "run": "git commit -q -m \"Add dosing modlue\"" }
+  ],
+  "steps": [
+    {
+      "title": "Survey the mess you just made",
+      "why": "The message has a typo, and the test file that belongs with this change was never staged. Both are one command away from being fixed — as long as nobody has pulled it.",
+      "commands": ["git log --oneline -1", "git status --short"]
+    },
+    {
+      "title": "Write down the sha before you touch it",
+      "why": "Amend replaces the commit. Knowing the old sha lets you prove that afterwards, and lets you recover if you amend something you should not have.",
+      "run": "git rev-parse --short HEAD"
+    },
+    {
+      "title": "Fix just the message",
+      "why": "With nothing staged, `--amend` reuses the same tree and only rewrites the message. `-m` supplies it directly instead of opening an editor.",
+      "commands": ["git commit --amend -m \"Add dosing module\"", "git log --oneline -1", "git rev-parse --short HEAD"],
+      "expect": "Same content, corrected message, and a different sha.",
+      "verify": [
+        { "cmd": "git log --pretty=%s -1", "equals": "Add dosing module",
+          "label": "the message is fixed", "hint": "git commit --amend -m \"Add dosing module\"" }
+      ]
+    },
+    {
+      "title": "Add the file you forgot",
+      "why": "Stage the missing file, then amend with `--no-edit` to keep the message untouched. The result is one clean commit instead of a follow-up called 'add missing test'.",
+      "commands": ["git add dosing_test.py", "git commit --amend --no-edit", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": ["dosing.py", "dosing_test.py"],
+          "label": "both files are in the one commit",
+          "hint": "git add dosing_test.py, then git commit --amend --no-edit" }
+      ]
+    },
+    {
+      "title": "Confirm the history is still two commits",
+      "why": "Three amends, still two commits. Amend never adds to history — it substitutes. Compare that with a 'fix typo' commit, which is permanent noise.",
+      "commands": ["git log --oneline"],
+      "expect": "Exactly two commits."
+    },
+    {
+      "title": "See the commits you replaced",
+      "why": "The superseded commits are still in the object database, listed in the reflog. Nothing was destroyed; the branch simply stopped pointing at them.",
+      "commands": ["git reflog", "git log --oneline --all --reflog | head -6"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "history is still two commits — amend substitutes, it does not append",
+      "hint": "use --amend rather than making a follow-up commit" },
+    { "cmd": "git log --pretty=%s -1", "equals": "Add dosing module",
+      "label": "the typo in the message is gone" },
+    { "cmd": "git show --stat HEAD", "contains": ["dosing.py", "dosing_test.py"],
+      "label": "the forgotten test file is in the same commit" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "nothing left uncommitted" }
+  ],
+  "pitfalls": [
+    "Amending a pushed commit means your next push is rejected. Use `--force-with-lease` only if you are certain nobody has pulled it.",
+    "`--amend` with staged changes folds them in silently. Always check `git diff --staged` first, or you will amend something unrelated.",
+    "`--amend --reset-author` also refreshes the author identity and timestamp — needed when you committed with the wrong email.",
+    "Amended the wrong thing? `git reset --hard <old-sha>` from the reflog puts it back exactly."
+  ],
+  "cheatsheet": [
+    ["git commit --amend -m \"...\"", "replace the last commit's message"],
+    ["git commit --amend --no-edit", "fold staged changes in, keep the message"],
+    ["git commit --amend --reset-author", "also refresh author identity and date"],
+    ["git rev-parse --short HEAD", "note the sha before you rewrite it"],
+    ["git reflog", "find the commit you replaced"]
+  ]
+}

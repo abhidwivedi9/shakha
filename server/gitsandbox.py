@@ -20,18 +20,29 @@ from pathlib import Path
 # with a hint rather than executed -- this is a teaching sandbox, not a shell.
 ALLOWED_BINARIES = {"git", "ls", "cat", "pwd", "echo"}
 
+# Identity deliberately does NOT live here. Environment variables outrank
+# config, which would make `git config user.email` unteachable -- so the
+# learner's identity is seeded into the sandbox's own global config instead.
 GIT_ENV = {
-    "GIT_AUTHOR_NAME": "Learner",
-    "GIT_AUTHOR_EMAIL": "learner@shakha.local",
-    "GIT_COMMITTER_NAME": "Learner",
-    "GIT_COMMITTER_EMAIL": "learner@shakha.local",
-    "GIT_CONFIG_GLOBAL": os.devnull,   # never read the user's real ~/.gitconfig
     "GIT_CONFIG_SYSTEM": os.devnull,
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_PAGER": "cat",
     "LC_ALL": "C",
 }
 
+SEED_GLOBAL_CONFIG = """[user]
+\tname = Learner
+\temail = learner@shakha.local
+[init]
+\tdefaultBranch = main
+[core]
+\tautocrlf = false
+[advice]
+\tdetachedHead = false
+"""
+
+# A second person, for scenarios that need two humans. Here env vars are exactly
+# what we want: they override config for this one command and nothing else.
 TEAMMATE_ENV = dict(
     GIT_ENV,
     GIT_AUTHOR_NAME="Priya", GIT_AUTHOR_EMAIL="priya@shakha.local",
@@ -114,6 +125,16 @@ class Sandbox:
 
         env = dict(os.environ)
         env.update(GIT_ENV)
+        # Each sandbox gets its own throwaway "global" config, so scenarios can
+        # teach `git config --global` without ever reaching the real ~/.gitconfig.
+        fake_home = self.base / "home"
+        fake_home.mkdir(parents=True, exist_ok=True)
+        global_config = fake_home / ".gitconfig"
+        if not global_config.exists():
+            with open(global_config, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(SEED_GLOBAL_CONFIG)
+        env["GIT_CONFIG_GLOBAL"] = str(global_config)
+        env["HOME"] = str(fake_home)
         if env_extra:
             env.update(env_extra)
 

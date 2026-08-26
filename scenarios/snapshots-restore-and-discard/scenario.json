@@ -1,0 +1,95 @@
+{
+  "id": "snapshots-restore-and-discard",
+  "title": "Undo an edit without losing the one next to it",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "Throw away one file's changes, unstage another, and pull a third back from an old commit — using git restore, the command that replaced the overloaded git checkout.",
+  "concepts": ["git restore", "--staged", "--source", "checkout vs restore", "unrecoverable changes"],
+  "mental_model": "`restore` answers 'make this file look like X'. Default X is the index; `--staged` makes the index look like HEAD; `--source=<commit>` makes it look like any commit you name. One verb, one target, no surprises.",
+  "danger": "`git restore <file>` discards working-tree edits permanently. They were never committed, so no reflog and no recovery. This is the one genuinely destructive command in everyday git.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "write": { "path": "sensor.py", "content": "UNIT = 'celsius'\n" } },
+    { "write": { "path": "schedule.py", "content": "LIGHTS_ON = '08:00'\n" } },
+    { "commit": { "message": "Add controller settings" } },
+    { "write": { "path": "schedule.py", "content": "LIGHTS_ON = '07:30'\n" } },
+    { "commit": { "message": "Shift lights earlier" } },
+    { "write": { "path": "pump.py", "content": "RPM = 9999\nBROKEN = True\n" } },
+    { "write": { "path": "sensor.py", "content": "UNIT = 'kelvin'\n" } },
+    { "run": "git add sensor.py" }
+  ],
+  "steps": [
+    {
+      "title": "Read the two-column status carefully",
+      "why": "sensor.py is staged, pump.py is not. The left column is the index, the right column is the working tree. Every restore decision starts by reading which column the letter is in.",
+      "commands": ["git status --short", "git status"]
+    },
+    {
+      "title": "Unstage sensor.py without losing the edit",
+      "why": "`--staged` copies HEAD's version into the index only. The working tree is untouched, so your edit survives — it is simply no longer scheduled for the next commit.",
+      "commands": ["git restore --staged sensor.py", "git status --short", "cat sensor.py"],
+      "expect": "sensor.py moves to the right-hand column and still says kelvin.",
+      "verify": [
+        { "cmd": "git diff --cached --name-only", "empty": true,
+          "label": "nothing is staged any more", "hint": "git restore --staged sensor.py" },
+        { "cmd": "cat sensor.py", "contains": "kelvin",
+          "label": "the edit itself survived unstaging" }
+      ]
+    },
+    {
+      "title": "Throw away the broken pump edit",
+      "why": "This is the destructive one. `restore` with no flags overwrites the working-tree file from the index — which here matches HEAD. The 9999 and the BROKEN flag are gone for good.",
+      "commands": ["git restore pump.py", "cat pump.py", "git status --short"],
+      "verify": [
+        { "cmd": "cat pump.py", "equals": "RPM = 1200",
+          "label": "pump.py is back to its committed state", "hint": "git restore pump.py" }
+      ]
+    },
+    {
+      "title": "Recover an old version of a file",
+      "why": "`--source` reaches into any commit. Here we pull schedule.py as it existed one commit ago — useful when a change turns out to be wrong but you do not want to revert the whole commit.",
+      "commands": ["git restore --source=HEAD~1 schedule.py", "cat schedule.py", "git status --short"],
+      "expect": "LIGHTS_ON back to 08:00, showing as a working-tree modification."
+    },
+    {
+      "title": "Restore into the index and the working tree at once",
+      "why": "`--staged --worktree` together set both. This is the closest thing to 'make this file exactly like that commit, ready to commit' in one step.",
+      "commands": ["git restore --source=HEAD --staged --worktree schedule.py", "cat schedule.py", "git status --short"],
+      "expect": "schedule.py back to 07:30 and the tree clean of it."
+    },
+    {
+      "title": "Why restore exists at all",
+      "why": "`git checkout` did branch switching, file restoring and commit inspection with the same word — the single biggest source of git confusion. `switch` and `restore` split it in two. Old tutorials still show checkout; both work.",
+      "commands": ["git status --short", "git log --oneline"]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat pump.py", "equals": "RPM = 1200",
+      "label": "the broken pump edit was discarded", "hint": "git restore pump.py" },
+    { "cmd": "cat sensor.py", "contains": "kelvin",
+      "label": "the sensor edit was unstaged but kept",
+      "hint": "git restore --staged sensor.py — without --staged you would have destroyed it" },
+    { "cmd": "git diff --cached --name-only", "empty": true,
+      "label": "nothing is staged" },
+    { "cmd": "cat schedule.py", "contains": "07:30",
+      "label": "schedule.py was put back to its committed state after the experiment",
+      "hint": "git restore --source=HEAD --staged --worktree schedule.py" }
+  ],
+  "pitfalls": [
+    "`git restore <file>` on uncommitted work is unrecoverable. If you are unsure, `git stash` instead — it is reversible.",
+    "`git restore --staged` unstages; `git reset <file>` does the same thing. restore is the clearer spelling.",
+    "`git restore .` from a subdirectory only restores that subdirectory. Use `:/` for the whole repo.",
+    "`git checkout -- <file>` is the old spelling of the destructive form. Same danger, worse name."
+  ],
+  "cheatsheet": [
+    ["git restore <file>", "discard working-tree changes — destructive"],
+    ["git restore --staged <file>", "unstage, keep the edit"],
+    ["git restore --staged --worktree <file>", "reset both to HEAD"],
+    ["git restore --source=<commit> <file>", "pull one file from any commit"],
+    ["git restore -p <file>", "discard selected hunks only"],
+    ["git stash", "the reversible alternative to discarding"]
+  ]
+}

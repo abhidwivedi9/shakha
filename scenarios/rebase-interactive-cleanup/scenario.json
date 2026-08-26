@@ -1,5 +1,5 @@
 {
-  "id": "S06-interactive-rebase-cleanup",
+  "id": "rebase-interactive-cleanup",
   "title": "Turn five messy commits into a reviewable branch",
   "category": "rebase",
   "level": "advanced",

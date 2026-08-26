@@ -1,0 +1,87 @@
+{
+  "id": "snapshots-diff-three-ways",
+  "title": "git diff shows nothing — because you staged it",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 10,
+  "summary": "There are three snapshots in play and diff compares two of them at a time. Learn which pair each form of the command uses, and the confusion disappears permanently.",
+  "concepts": ["working tree", "index", "HEAD", "diff --staged", "diff HEAD"],
+  "mental_model": "`git diff` = working tree vs index. `git diff --staged` = index vs HEAD. `git diff HEAD` = working tree vs HEAD. Three snapshots, three comparisons, and the default is the one people forget.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\nRAMP = False\n" } },
+    { "write": { "path": "sensor.py", "content": "UNIT = 'celsius'\n" } },
+    { "commit": { "message": "Add pump and sensor settings" } }
+  ],
+  "steps": [
+    {
+      "title": "Change two files, stage one",
+      "why": "This sets up the state where all three diffs differ. pump.py will be staged; sensor.py will be left in the working tree only.",
+      "actions": [
+        { "write": { "path": "pump.py", "content": "RPM = 1600\nRAMP = True\n" } },
+        { "write": { "path": "sensor.py", "content": "UNIT = 'fahrenheit'\n" } },
+        { "run": "git add pump.py" }
+      ],
+      "commands": ["git status --short"],
+      "expect": "M  pump.py (staged) and  M sensor.py (not staged) — note which column the M sits in."
+    },
+    {
+      "title": "The default diff, and why it looks incomplete",
+      "why": "Bare `git diff` compares the working tree with the index. pump.py is identical in both — you already staged it — so it does not appear. This is the moment people conclude git has eaten their change.",
+      "run": "git diff",
+      "expect": "Only sensor.py. pump.py is invisible here."
+    },
+    {
+      "title": "The staged diff — what your next commit will contain",
+      "why": "`--staged` (or `--cached`, same thing) compares the index with HEAD. This is the true preview of your commit, and worth running every single time before you commit.",
+      "run": "git diff --staged",
+      "expect": "Only pump.py, with both lines changed."
+    },
+    {
+      "title": "Everything since the last commit",
+      "why": "`git diff HEAD` compares the working tree with HEAD, ignoring the index entirely. It is the answer to 'what have I done since my last commit', regardless of what is staged.",
+      "run": "git diff HEAD",
+      "expect": "Both files."
+    },
+    {
+      "title": "Commit and confirm what got in",
+      "why": "Only the staged change is committed. sensor.py stays modified in the working tree, exactly as the three diffs predicted.",
+      "commands": ["git commit -m \"Ramp the pump to 1600 RPM\"", "git status --short", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": "pump.py", "label": "pump.py was committed" },
+        { "cmd": "git show --stat HEAD", "not_contains": "sensor.py",
+          "label": "sensor.py was not — it was never staged" }
+      ]
+    },
+    {
+      "title": "Diffs worth knowing beyond the three",
+      "why": "`--stat` for shape, `--word-diff` for prose and config files, `-w` to ignore whitespace churn, and `--name-only` for scripting. These four cover most real review work.",
+      "commands": ["git diff --stat HEAD", "git diff --word-diff", "git diff --name-only"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show --stat HEAD", "contains": "pump.py",
+      "label": "the staged file was committed", "hint": "git add pump.py, then commit" },
+    { "cmd": "git show --stat HEAD", "not_contains": "sensor.py",
+      "label": "the unstaged file stayed out of the commit" },
+    { "cmd": "git status --porcelain", "contains": " M sensor.py",
+      "label": "sensor.py is still modified in the working tree",
+      "hint": "leave it unstaged — that is the point of the scenario" },
+    { "cmd": "git diff --staged", "empty": true,
+      "label": "nothing is staged any more, because the commit consumed it" }
+  ],
+  "pitfalls": [
+    "`git diff` after staging everything shows nothing at all. That is correct behaviour, not a lost change.",
+    "`git diff branch1 branch2` compares tips; `git diff branch1...branch2` compares against the merge base. Code review tools use the three-dot form.",
+    "`git diff` pages by default in a normal terminal. `--no-pager` or `| cat` in scripts."
+  ],
+  "cheatsheet": [
+    ["git diff", "working tree vs index — what is NOT staged"],
+    ["git diff --staged", "index vs HEAD — what your commit WILL contain"],
+    ["git diff HEAD", "working tree vs HEAD — everything since the last commit"],
+    ["git diff --stat", "files and line counts instead of full hunks"],
+    ["git diff -w", "ignore whitespace-only changes"],
+    ["git diff <a>...<b>", "changes on b since it diverged from a"]
+  ]
+}

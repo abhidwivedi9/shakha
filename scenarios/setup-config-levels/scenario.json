@@ -1,0 +1,87 @@
+{
+  "id": "setup-config-levels",
+  "title": "Three config levels, and why your commits have the wrong email",
+  "category": "setup",
+  "level": "beginner",
+  "order": 3,
+  "duration_min": 10,
+  "summary": "System, global and local config stack on top of each other. Learn which one wins, how to see where a value came from, and how to stop committing work email to personal repos.",
+  "concepts": ["config precedence", "--system / --global / --local", "--show-origin", "conditional includes"],
+  "mental_model": "Git reads system, then global, then local, and the last one to speak wins. Every confusing config problem is answered by `git config --list --show-origin`, which prints the value *and* the file it came from.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "run": "git config --global user.name \"Work Account\"" },
+    { "run": "git config --global user.email \"you@bigcorp.example\"" },
+    { "write": { "path": "notes.md", "content": "# Personal project\n" } }
+  ],
+  "steps": [
+    {
+      "title": "See what identity you would commit with",
+      "why": "There is no local setting yet, so git falls back to the global one — your work identity. Every commit you make in this personal repo would carry it, forever, in a field that cannot be edited without rewriting history.",
+      "commands": ["git config --get user.email", "git config --list --show-origin --show-scope"],
+      "expect": "The email resolves to the global file."
+    },
+    {
+      "title": "Commit once and look at the damage",
+      "why": "Author and committer email are baked into the commit object. This is why the fix has to happen before you commit, or via a history rewrite afterwards.",
+      "commands": ["git add -A", "git commit -m \"Start personal notes\"", "git log --pretty=\"%an <%ae>\" -1"]
+    },
+    {
+      "title": "Set a local identity — local beats global",
+      "why": "`--local` writes to `.git/config` inside this repo only. It is the narrowest scope and therefore the winner. Nothing about the global file changes.",
+      "commands": ["git config --local user.email \"me@personal.example\"", "git config --get user.email"],
+      "verify": [
+        { "cmd": "git config --get user.email", "equals": "me@personal.example",
+          "label": "the local email wins", "hint": "git config --local user.email me@personal.example" }
+      ]
+    },
+    {
+      "title": "Prove where each value comes from",
+      "why": "`--show-origin` prints the file behind every value. When a setting behaves in a way you cannot explain, this one command ends the argument in seconds.",
+      "commands": ["git config --list --show-origin --show-scope | cat"],
+      "expect": "user.email listed twice — once global, once local. The local one is the effective value."
+    },
+    {
+      "title": "Fix the commit that already went out",
+      "why": "`commit --amend --reset-author` rewrites the last commit with the currently configured identity. It only works for commits you have not shared; for older ones you would need a history rewrite.",
+      "commands": ["git commit --amend --no-edit --reset-author", "git log --pretty=\"%an <%ae>\" -1"],
+      "verify": [
+        { "cmd": "git log --pretty=%ae -1", "equals": "me@personal.example",
+          "label": "the commit now carries the personal email",
+          "hint": "git commit --amend --no-edit --reset-author" }
+      ]
+    },
+    {
+      "title": "Settings worth turning on everywhere",
+      "why": "These three prevent whole categories of confusion: pull.rebase stops merge-commit litter, rerere remembers conflict resolutions, and push.default=simple refuses to push branches you did not mean to.",
+      "commands": ["git config --global pull.rebase true", "git config --global rerere.enabled true", "git config --global push.default simple", "git config --global --list | cat"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get user.email", "equals": "me@personal.example",
+      "label": "this repo commits with the personal identity",
+      "hint": "git config --local user.email me@personal.example" },
+    { "cmd": "git config --global --get user.email", "equals": "you@bigcorp.example",
+      "label": "the global identity was left alone — local overrides, it does not replace",
+      "hint": "use --local, not --global, for the fix" },
+    { "cmd": "git log --pretty=%ae -1", "equals": "me@personal.example",
+      "label": "the existing commit was corrected too",
+      "hint": "git commit --amend --no-edit --reset-author" },
+    { "cmd": "git config --global --get pull.rebase", "equals": "true",
+      "label": "pull.rebase is on globally" }
+  ],
+  "pitfalls": [
+    "Setting `user.email` after committing does not fix past commits. The identity is part of the commit object.",
+    "`git config --global core.excludesfile` is the right home for editor and OS noise like .DS_Store — do not put it in every project's .gitignore.",
+    "Conditional includes (`[includeIf \"gitdir:~/work/\"]`) switch identity by directory automatically. It is the real fix for the work/personal split.",
+    "This sandbox has its own throwaway global config — nothing you do here can reach your real ~/.gitconfig."
+  ],
+  "cheatsheet": [
+    ["git config --get <key>", "the effective value after all three levels"],
+    ["git config --list --show-origin --show-scope", "every value and the file it came from"],
+    ["git config --local <key> <value>", "this repo only — .git/config"],
+    ["git config --global <key> <value>", "this user — ~/.gitconfig"],
+    ["git config --unset <key>", "remove a value at that level"],
+    ["git commit --amend --reset-author", "redo the last commit with the current identity"]
+  ]
+}

@@ -1,0 +1,91 @@
+{
+  "id": "snapshots-clean",
+  "title": "git clean: delete untracked files without deleting your work",
+  "category": "snapshots",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 8,
+  "summary": "Build artefacts and stray files are cluttering status. Clean them out — and learn the dry-run habit that stops this command from eating a config file you needed.",
+  "concepts": ["git clean", "-n dry run", "-d directories", "-x ignored files", "untracked vs ignored"],
+  "mental_model": "clean deletes files git is not tracking. It never touches tracked files, so it cannot destroy committed work — but untracked does not mean unimportant, and there is no undo.",
+  "danger": "`git clean -xfd` deletes ignored files too: local .env files, virtualenvs, editor settings, downloaded fixtures. Always run `-n` first and read the list.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "write": { "path": ".gitignore", "content": "*.log\n.env\n" } },
+    { "commit": { "message": "Add app" } },
+    { "write": { "path": "build/artifact.bin", "content": "compiled\n" } },
+    { "write": { "path": "build/manifest.json", "content": "{}\n" } },
+    { "write": { "path": "scratch.txt", "content": "temporary thinking\n" } },
+    { "write": { "path": "debug.log", "content": "noise\n" } },
+    { "write": { "path": ".env", "content": "LOCAL_DB=localhost\n" } },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Separate the three kinds of file",
+      "why": "app.py is tracked and modified. scratch.txt and build/ are untracked. debug.log and .env are ignored. clean treats all three differently, and status hides the third by default.",
+      "commands": ["git status --short", "git status --short --ignored"]
+    },
+    {
+      "title": "Dry run first — always",
+      "why": "`-n` prints what would be deleted and touches nothing. Making this reflexive is the difference between a tidy repo and losing an afternoon of local config.",
+      "run": "git clean -n",
+      "expect": "scratch.txt only — untracked directories need another flag."
+    },
+    {
+      "title": "Include directories in the preview",
+      "why": "By default clean refuses to descend into untracked directories. `-d` includes them. Notice the preview now lists build/ as a whole.",
+      "run": "git clean -nd",
+      "expect": "scratch.txt and build/."
+    },
+    {
+      "title": "See what -x would take with it",
+      "why": "`-x` adds ignored files to the list: your .env and the logs. This is the flag that turns a tidy-up into an incident, so read this preview character by character.",
+      "run": "git clean -ndx",
+      "expect": "scratch.txt, build/, debug.log and .env — including the one you would regret."
+    },
+    {
+      "title": "Delete only what you meant to",
+      "why": "Run it without `-x` so ignored files survive, and confirm afterwards. Tracked modifications to app.py are untouched — clean has no opinion about tracked files.",
+      "commands": ["git clean -fd", "git status --short --ignored", "ls"],
+      "verify": [
+        { "cmd": "ls", "not_contains": ["scratch.txt", "build"],
+          "label": "the untracked clutter is gone", "hint": "git clean -fd" },
+        { "cmd": "ls -a", "contains": ".env",
+          "label": "the ignored .env survived, because you left -x off" }
+      ]
+    },
+    {
+      "title": "Confirm your real work survived",
+      "why": "app.py is still modified and still yours. This is the reassuring half of clean: it operates strictly outside tracked content.",
+      "commands": ["git status --short", "git diff --stat", "cat app.py"]
+    }
+  ],
+  "verify": [
+    { "cmd": "ls", "not_contains": ["scratch.txt", "build"],
+      "label": "untracked files and directories were removed",
+      "hint": "git clean -fd — the d is what removes directories" },
+    { "cmd": "ls -a", "contains": ".env",
+      "label": ".env survived, because -x was not used",
+      "hint": "adding -x would have deleted your local environment file" },
+    { "cmd": "cat app.py", "contains": "reef controller",
+      "label": "the tracked modification was never at risk" },
+    { "cmd": "git status --porcelain", "contains": " M app.py",
+      "label": "app.py is still modified and still uncommitted" }
+  ],
+  "pitfalls": [
+    "clean has no undo and untracked files are not in the object database. `-n` first, every time.",
+    "`-f` is mandatory by default (`clean.requireForce`), which is git protecting you from a typo.",
+    "`git clean -xfd` before a build is a genuinely useful reset — just never run it in a directory holding local secrets or data.",
+    "`git clean -i` gives an interactive picker if you want some of the list but not all of it."
+  ],
+  "cheatsheet": [
+    ["git clean -n", "dry run: what would be deleted"],
+    ["git clean -nd", "…including untracked directories"],
+    ["git clean -ndx", "…including ignored files — read this one carefully"],
+    ["git clean -fd", "delete untracked files and directories"],
+    ["git clean -fdx", "also delete ignored files: a true blank slate"],
+    ["git clean -i", "choose interactively"]
+  ]
+}

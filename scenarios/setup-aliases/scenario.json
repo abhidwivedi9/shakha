@@ -1,0 +1,92 @@
+{
+  "id": "setup-aliases",
+  "title": "Aliases: stop typing the same forty characters",
+  "category": "setup",
+  "level": "beginner",
+  "order": 6,
+  "duration_min": 8,
+  "summary": "Build the handful of aliases that experienced people actually use, including one that shells out, and learn how to read an alias someone else wrote.",
+  "concepts": ["alias", "shell aliases with !", "argument passing", "config scope"],
+  "mental_model": "An alias is a config key under `alias.`. If the value starts with `!`, git hands the whole thing to a shell instead of treating it as a git subcommand — that is the only rule you need to read anyone's dotfiles.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Add app" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Bump to v2" } },
+    { "run": "git switch -q -c feature/logging" },
+    { "write": { "path": "log.py", "content": "def log(msg):\n    print(msg)\n" } },
+    { "commit": { "message": "Add logging helper" } },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "The graph command nobody wants to retype",
+      "why": "This is the canonical history view. It is also 70 characters long, which is why almost nobody types it more than once before aliasing it.",
+      "run": "git log --graph --abbrev-commit --decorate --all --pretty=format:'%C(auto)%h%d %s %C(dim)(%an, %ar)'"
+    },
+    {
+      "title": "Alias it",
+      "why": "`alias.lg` becomes `git lg`. Aliases live in config like anything else, so `--global` makes it available in every repo on the machine.",
+      "commands": ["git config --global alias.lg \"log --graph --abbrev-commit --decorate --all --pretty=format:'%C(auto)%h%d %s %C(dim)(%an, %ar)'\"", "git lg"],
+      "verify": [
+        { "cmd": "git config --global --get alias.lg", "not_empty": true,
+          "label": "the lg alias exists", "hint": "git config --global alias.lg \"log --graph ...\"" }
+      ]
+    },
+    {
+      "title": "The short ones that pay for themselves daily",
+      "why": "`st`, `sw`, `br` and `last` cover most of a working day. Keep them short — an alias you have to think about is worse than the command it replaces.",
+      "commands": ["git config --global alias.st \"status --short --branch\"", "git config --global alias.br \"branch -vv\"", "git config --global alias.last \"log -1 HEAD --stat\"", "git st", "git br"]
+    },
+    {
+      "title": "Aliases that take arguments",
+      "why": "Arguments are appended to the end of the expansion. So `git unstage app.py` becomes `git restore --staged app.py`. No syntax needed — until you want the argument somewhere other than the end.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "print('v3')\n" } },
+        { "run": "git add app.py" }
+      ],
+      "commands": ["git config --global alias.unstage \"restore --staged\"", "git unstage app.py", "git st"],
+      "expect": "app.py drops out of the staged column."
+    },
+    {
+      "title": "The bang alias, for anything git cannot express",
+      "why": "A leading `!` runs the value as a shell command from the repository root. This is how people build aliases that pipe, loop, or call other tools — and how you should read one you find in someone's dotfiles.",
+      "commands": ["git config --global alias.branches \"!git for-each-ref --sort=-committerdate --format='%(refname:short) %(committerdate:relative)' refs/heads\"", "git branches"],
+      "expect": "Branches listed newest-first, which plain git has no single flag for."
+    },
+    {
+      "title": "Read back what you built",
+      "why": "`git config --get-regexp alias` prints the whole set. Worth running on any machine you inherit — it explains a lot of otherwise mysterious commands in someone's shell history.",
+      "commands": ["git config --global --get-regexp '^alias\\.' | cat"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --global --get alias.lg", "contains": "--graph",
+      "label": "the graph alias is set", "hint": "git config --global alias.lg \"log --graph ...\"" },
+    { "cmd": "git config --global --get alias.st", "not_empty": true,
+      "label": "a status alias is set" },
+    { "cmd": "git config --global --get alias.unstage", "contains": "restore",
+      "label": "an unstage alias is set",
+      "hint": "git config --global alias.unstage \"restore --staged\"" },
+    { "cmd": "git config --global --get alias.branches", "matches": "^!",
+      "label": "a shell alias starting with ! is set",
+      "hint": "the value must begin with ! for git to hand it to a shell" },
+    { "cmd": "git status --porcelain", "not_contains": "A  app.py",
+      "label": "app.py was unstaged using your own alias",
+      "hint": "git unstage app.py" }
+  ],
+  "pitfalls": [
+    "You cannot alias over a real git command — `git config alias.status ...` is silently ignored.",
+    "A `!` alias runs from the repository root, not your current directory. Relative paths in one will surprise you.",
+    "Aliases are per-machine config. They do not travel with the repository, so never write documentation that assumes them.",
+    "Quoting an alias with a format string differs between shells. If it breaks, set it by editing ~/.gitconfig directly."
+  ],
+  "cheatsheet": [
+    ["git config --global alias.x \"<cmd>\"", "define an alias"],
+    ["git config --global --get-regexp '^alias\\.'", "list every alias"],
+    ["alias.co = checkout", "arguments append to the end automatically"],
+    ["alias.x = !sh -c '...'", "shell out for anything git cannot express"],
+    ["git config --global --unset alias.x", "remove one"]
+  ]
+}

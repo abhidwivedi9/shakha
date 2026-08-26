@@ -1,0 +1,96 @@
+{
+  "id": "snapshots-rm-and-mv",
+  "title": "Delete and rename files the way git understands",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 4,
+  "duration_min": 10,
+  "summary": "Git does not store renames. It infers them. Learn what git rm and git mv actually do, and why a rename plus an edit sometimes shows up as a delete and an add.",
+  "concepts": ["git rm", "git mv", "rename detection", "similarity index", "--cached"],
+  "mental_model": "There is no rename in git's data model — only trees of paths pointing at content. `git mv` is delete-plus-add staged together, and `git log` reconstructs the rename afterwards by noticing the content barely changed.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "old_name.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.0\n" } },
+    { "write": { "path": "legacy.py", "content": "# nobody uses this any more\n" } },
+    { "write": { "path": "notes.txt", "content": "scratch notes\n" } },
+    { "commit": { "message": "Add modules" } }
+  ],
+  "steps": [
+    {
+      "title": "Delete a file the way git wants",
+      "why": "`git rm` removes it from disk AND stages the deletion in one step. Deleting in your file manager works too, but leaves you to remember `git add -A` afterwards.",
+      "commands": ["git rm legacy.py", "git status --short"],
+      "expect": "D staged in the left column, with no separate add needed."
+    },
+    {
+      "title": "Untrack without deleting",
+      "why": "`--cached` stages the removal but leaves the file on disk. This is how you stop tracking a file you still need locally — config, secrets, a big local fixture. Untracking without also ignoring it is only half the job: the next `git add -A` would put it straight back.",
+      "actions": [
+        { "run": "git rm --cached notes.txt" },
+        { "write": { "path": ".gitignore", "content": "notes.txt\n" } }
+      ],
+      "commands": ["git status --short", "ls"],
+      "expect": "notes.txt is untracked and ignored, and still sitting on disk."
+    },
+    {
+      "title": "Rename with git mv",
+      "why": "`git mv` moves the file and stages both halves. Git records a delete of the old path and an add of the new one — the word 'rename' appears only later, when something reconstructs it.",
+      "commands": ["git mv old_name.py dosing.py", "git status --short", "git status"],
+      "expect": "Status is smart enough to already call it a rename."
+    },
+    {
+      "title": "Commit and watch git infer the rename",
+      "why": "`--stat` says 'old_name.py => dosing.py'. Nothing in the commit object says rename; git compared the blobs, found them identical, and reported it. That inference is why renames are free in git.",
+      "commands": ["git commit -m \"Rename dosing module, drop legacy code\"", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": "=>",
+          "label": "the commit reads as a rename", "hint": "git mv old_name.py dosing.py" }
+      ]
+    },
+    {
+      "title": "Break the inference on purpose",
+      "why": "Rename plus heavy edit in one commit drops the similarity below the threshold, and git reports a delete and an add instead. History becomes harder to follow — which is why you rename in one commit and edit in the next.",
+      "actions": [
+        { "run": "git mv dosing.py chemistry.py" },
+        { "write": { "path": "chemistry.py", "content": "import math\n\nDEFAULT_UNIT = 'ml'\n\n\ndef titrate(target_ph, current_ph, volume_l):\n    delta = target_ph - current_ph\n    return round(math.copysign(volume_l * abs(delta) * 0.15, delta), 3)\n\n\ndef schedule(doses):\n    return sorted(doses, key=lambda d: d['at'])\n" } }
+      ],
+      "commands": ["git add -A", "git commit -m \"Rewrite dosing as chemistry module\"", "git show --stat HEAD"],
+      "expect": "A delete and an add, no arrow — the content changed too much."
+    },
+    {
+      "title": "Make git look harder",
+      "why": "`-M` lowers the similarity threshold, so git will call something a rename even after a heavy edit. `--follow` traces one path backwards through renames. Both are read-time flags — history did not change, only how hard you asked git to look.",
+      "commands": ["git show --stat -M20% HEAD", "git log --oneline --follow -- chemistry.py"],
+      "expect": "With -M20% the arrow comes back. Compare it with the plain --stat from the previous step."
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "not_contains": ["legacy.py", "old_name.py", "notes.txt"],
+      "label": "the deleted and renamed paths are gone from tracking",
+      "hint": "git rm legacy.py, git rm --cached notes.txt (and ignore it), git mv old_name.py …" },
+    { "cmd": "git ls-files", "contains": "chemistry.py",
+      "label": "the renamed module is tracked under its new name" },
+    { "cmd": "ls", "contains": "notes.txt",
+      "label": "notes.txt is untracked but still on disk — that is what --cached does" },
+    { "cmd": "git show --stat -M HEAD~1", "contains": "=>",
+      "label": "the pure rename was detected as a rename",
+      "hint": "git mv on its own commit keeps history readable" },
+    { "cmd": "git show --stat HEAD", "not_contains": "=>",
+      "label": "the rename-plus-rewrite was NOT detected — it reads as a delete and an add",
+      "hint": "that is the lesson: rename in one commit, rewrite in the next" }
+  ],
+  "pitfalls": [
+    "On a case-insensitive filesystem, `git mv readme.md README.md` may be ignored. Use `git mv -f`, or rename via a temporary name.",
+    "Renaming and rewriting a file in the same commit hides the rename from history. Split them into two commits.",
+    "`git rm -r --cached .` unstages the entire repo. It is the classic 'fix my .gitignore' incantation, and it is easy to fire by accident.",
+    "`git mv` is only a convenience. Renaming in your editor and running `git add -A` produces an identical commit."
+  ],
+  "cheatsheet": [
+    ["git rm <file>", "delete from disk and stage the deletion"],
+    ["git rm --cached <file>", "untrack but keep on disk"],
+    ["git rm -r <dir>", "delete a directory"],
+    ["git mv <old> <new>", "rename and stage both halves"],
+    ["git show --stat -M", "detect renames when reading a commit"],
+    ["git log --follow -- <file>", "history across renames"]
+  ]
+}

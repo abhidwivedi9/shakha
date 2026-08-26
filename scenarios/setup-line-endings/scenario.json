@@ -1,0 +1,94 @@
+{
+  "id": "setup-line-endings",
+  "title": "CRLF hell: the diff that shows every line changed",
+  "category": "setup",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 12,
+  "summary": "Someone opened a file in a Windows editor and now git says all 200 lines changed. Understand what git stores, what it checks out, and fix it with .gitattributes instead of per-machine settings.",
+  "concepts": [".gitattributes", "text=auto", "core.autocrlf", "ls-files --eol", "renormalisation"],
+  "mental_model": "Git stores line endings exactly as you commit them. `text=auto` says: normalise to LF inside the repository, and convert on checkout to whatever the platform wants. Without it, the repo ends up with a mix and every cross-platform diff is noise.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "config.ini", "content": "[tank]\nname = reef-01\ntemp = 26.0\nph = 8.1\n" } },
+    { "write": { "path": "script.sh", "content": "#!/bin/sh\necho starting\n" } },
+    { "commit": { "message": "Add config and script with LF endings" } }
+  ],
+  "steps": [
+    {
+      "title": "Check what is stored versus what is on disk",
+      "why": "`ls-files --eol` prints two things per file: `i/` is the index (what git stored) and `w/` is the working tree (what is on your disk). Right now both say lf. This command is the whole diagnostic.",
+      "commands": ["git ls-files --eol"],
+      "expect": "i/lf w/lf for both files."
+    },
+    {
+      "title": "Simulate the Windows editor",
+      "why": "A colleague opens config.ini in an editor that saves CRLF. Not one character of content changed, but every single line now differs at the byte level — and git compares bytes.",
+      "actions": [
+        { "write": { "path": "config.ini", "content": "[tank]\r\nname = reef-01\r\ntemp = 26.0\r\nph = 8.1\r\n" } }
+      ],
+      "commands": ["git status --short", "git ls-files --eol", "git diff --stat"],
+      "expect": "config.ini modified, w/crlf against i/lf, and the diff claims all four lines changed."
+    },
+    {
+      "title": "See the noise a reviewer would see",
+      "why": "`--ignore-cr-at-eol` proves there is no real change. A pull request full of these is unreviewable, which is why teams that skip .gitattributes eventually lose a day to it.",
+      "commands": ["git diff --stat --ignore-cr-at-eol", "git diff --stat"],
+      "expect": "Zero changes when carriage returns are ignored, four when they are not."
+    },
+    {
+      "title": "Fix it at the repository level, not the machine level",
+      "why": "`core.autocrlf` is a per-machine setting, so it only works if every person configures it identically — they never do. `.gitattributes` ships with the repo and binds everyone, including CI.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "# Normalise everything to LF in the repository.\n* text=auto\n\n# Shell scripts must stay LF even on Windows checkouts.\n*.sh text eol=lf\n\n# Windows-only files stay CRLF.\n*.bat text eol=crlf\n\n# Never touch binaries.\n*.png binary\n" } }
+      ],
+      "commands": ["git add .gitattributes", "git commit -m \"Normalise line endings via gitattributes\""]
+    },
+    {
+      "title": "Renormalise the files already in history",
+      "why": "New rules do not retroactively change what is stored. `git add --renormalize .` re-reads every file through the new attributes and stages the corrected version — a one-time cleanup commit every project needs exactly once.",
+      "commands": ["git add --renormalize .", "git status --short", "git commit -m \"Renormalise line endings\" --allow-empty", "git ls-files --eol"],
+      "expect": "i/lf again for config.ini — git stores LF regardless of what your editor writes.",
+      "verify": [
+        { "cmd": "git ls-files --eol config.ini", "contains": "i/lf",
+          "label": "config.ini is stored with LF in the index",
+          "hint": "add .gitattributes with `* text=auto`, then git add --renormalize ." }
+      ]
+    },
+    {
+      "title": "Prove the noise is gone",
+      "why": "Rewriting the file with CRLF again now produces no diff at all: git normalises on the way in. The editor can do whatever it likes and history stays clean.",
+      "actions": [
+        { "write": { "path": "config.ini", "content": "[tank]\r\nname = reef-01\r\ntemp = 26.0\r\nph = 8.1\r\n" } }
+      ],
+      "commands": ["git status --short", "git diff --stat"],
+      "expect": "Nothing. The CRLF file matches the LF blob after normalisation."
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files --eol config.ini", "contains": "i/lf",
+      "label": "the repository stores LF",
+      "hint": "* text=auto in .gitattributes, then git add --renormalize ." },
+    { "cmd": "git ls-files", "contains": ".gitattributes",
+      "label": ".gitattributes is committed, so the rule travels with the repo" },
+    { "cmd": "cat .gitattributes", "contains": "text=auto",
+      "label": "the catch-all normalisation rule is present" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "no phantom modifications remain",
+      "hint": "after renormalising, a CRLF file on disk should produce no diff" }
+  ],
+  "pitfalls": [
+    "`core.autocrlf=true` fixes it on your machine and nowhere else. Ship `.gitattributes` instead.",
+    "A `.sh` file checked out with CRLF fails in Linux containers with a baffling `\\r: not found`. Pin it with `eol=lf`.",
+    "Marking a file `binary` disables both diffing and line-ending conversion — right for images, wrong for text you want to review.",
+    "The renormalisation commit touches nearly every file. Land it on its own, never mixed with real changes."
+  ],
+  "cheatsheet": [
+    ["git ls-files --eol", "index and working-tree line endings, per file"],
+    ["* text=auto", "normalise to LF in the repo, convert on checkout"],
+    ["*.sh text eol=lf", "force LF on checkout regardless of platform"],
+    ["*.png binary", "never diff, never convert"],
+    ["git add --renormalize .", "restage everything through the current attributes"],
+    ["git diff --ignore-cr-at-eol", "prove a diff is only line endings"]
+  ]
+}

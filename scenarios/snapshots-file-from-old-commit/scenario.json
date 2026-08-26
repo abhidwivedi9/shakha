@@ -1,0 +1,96 @@
+{
+  "id": "snapshots-file-from-old-commit",
+  "title": "Pull one file back from three commits ago",
+  "category": "snapshots",
+  "level": "intermediate",
+  "order": 7,
+  "duration_min": 10,
+  "summary": "A config file was right two weeks ago and wrong now. Get that one file back without reverting the commits around it, and learn to read any file from any point in history.",
+  "concepts": ["git show <rev>:<path>", "restore --source", "revision syntax", "log -- <path>"],
+  "mental_model": "`<commit>:<path>` names the content of a file inside a commit. Once you can write that, you can read it, diff it, or drop it into your working tree — no checkout, no branch switching, no time travel for the whole repo.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "thresholds.yaml", "content": "temp_high_c: 29.0\ntemp_low_c: 23.0\nph_high: 8.4\nph_low: 7.8\n" } },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Add alert thresholds" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Refactor entrypoint" } },
+    { "write": { "path": "thresholds.yaml", "content": "temp_high_c: 40.0\ntemp_low_c: 5.0\nph_high: 14.0\nph_low: 0.0\n" } },
+    { "commit": { "message": "Widen thresholds while debugging the alerting pipeline" } },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Add startup banner" } }
+  ],
+  "steps": [
+    {
+      "title": "Find when the file last changed",
+      "why": "`log -- <path>` limits history to commits touching that file. Three commits of noise disappear and the culprit is obvious.",
+      "commands": ["git log --oneline", "git log --oneline -- thresholds.yaml"],
+      "expect": "Only two commits touched thresholds.yaml."
+    },
+    {
+      "title": "See what that commit did to it",
+      "why": "Scoping a diff to one path is how you read a large commit. Here it shows debugging values that were never meant to survive.",
+      "commands": ["git show HEAD~1 -- thresholds.yaml", "cat thresholds.yaml"]
+    },
+    {
+      "title": "Read the old version without changing anything",
+      "why": "`git show <rev>:<path>` prints a file exactly as it was in that commit. Nothing on disk changes — this is the safest way to check a value before deciding what to do.",
+      "commands": ["git show HEAD~2:thresholds.yaml", "git show HEAD~2:app.py"],
+      "expect": "The sane thresholds, printed straight from history."
+    },
+    {
+      "title": "Compare then and now",
+      "why": "Naming two revisions with a path shows just that file's drift. This is the diff you paste into the incident channel.",
+      "commands": ["git diff HEAD~2 HEAD -- thresholds.yaml"]
+    },
+    {
+      "title": "Restore just that file",
+      "why": "`restore --source` writes the old content into your working tree, leaving every other file at its current state. The three commits around it are untouched — no revert, no reset.",
+      "commands": ["git restore --source=HEAD~2 thresholds.yaml", "git status --short", "cat thresholds.yaml"],
+      "verify": [
+        { "cmd": "cat thresholds.yaml", "contains": "temp_high_c: 29.0",
+          "label": "the old thresholds are back in the working tree",
+          "hint": "git restore --source=HEAD~2 thresholds.yaml" }
+      ]
+    },
+    {
+      "title": "Commit the correction with a message that explains it",
+      "why": "The commit records a deliberate reversal of one file. Anyone reading history later sees what happened and why, which a silent overwrite would not tell them.",
+      "commands": ["git add thresholds.yaml", "git commit -m \"Restore production alert thresholds (debug values leaked in)\"", "git log --oneline -- thresholds.yaml"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the fix is committed" }
+      ]
+    },
+    {
+      "title": "Revision syntax worth memorising",
+      "why": "`HEAD~2` is two first-parents back. `HEAD^2` is the second parent of a merge. `main@{1}` is where main pointed one move ago. Most 'how do I name that commit' questions end here.",
+      "commands": ["git rev-parse --short HEAD~2", "git log --oneline -1 main@{1}", "git rev-parse --short HEAD@{2}"]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat thresholds.yaml", "contains": ["temp_high_c: 29.0", "ph_low: 7.8"],
+      "label": "the sane thresholds are restored",
+      "hint": "git restore --source=HEAD~2 thresholds.yaml (before you committed the fix, HEAD~2 was the good one)" },
+    { "cmd": "cat app.py", "contains": "v3",
+      "label": "app.py was left alone — you restored one file, not the whole tree",
+      "hint": "a git revert or reset would have dragged app.py back too" },
+    { "cmd": "git log --oneline", "lines": 5,
+      "label": "the correction is a new commit on top, not a rewrite",
+      "hint": "commit the restored file rather than amending or resetting" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "`git checkout HEAD~2 -- <file>` is the older spelling and also stages the file. `restore --source` only touches the working tree unless you add `--staged`.",
+    "`git restore --source=<commit> .` restores the whole tree but leaves the branch where it is — an easy way to create a confusing 'revert everything' commit.",
+    "`HEAD~2` moves relative to where HEAD is *now*. After you commit the fix, the same expression names a different commit.",
+    "Reading a file with `git show <rev>:<path>` needs the path from the repository root, not relative to your current directory."
+  ],
+  "cheatsheet": [
+    ["git log --oneline -- <path>", "commits that touched one file"],
+    ["git show <rev>:<path>", "print a file as of that commit"],
+    ["git diff <a> <b> -- <path>", "how one file changed between two commits"],
+    ["git restore --source=<rev> <path>", "put an old version in your working tree"],
+    ["git log -p --follow -- <path>", "full history of one file, across renames"],
+    ["HEAD~n / HEAD^2 / main@{1}", "n back / second parent / reflog position"]
+  ]
+}

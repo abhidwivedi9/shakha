@@ -1,0 +1,89 @@
+{
+  "id": "setup-clone-existing",
+  "title": "Clone a repository and understand what you actually got",
+  "category": "setup",
+  "level": "beginner",
+  "order": 2,
+  "duration_min": 10,
+  "summary": "A clone is not a download of the latest files. It is a full copy of the object database plus one checked-out branch. Prove it by finding history the clone never asked for.",
+  "concepts": ["clone", "origin", "remote-tracking branches", "bare repository", "HEAD"],
+  "mental_model": "Clone copies every commit, tree and blob the server has, then checks out one branch. Everything else is still there — you just have to ask for it by name. That is why git works on a plane.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add pump module" } },
+    { "run": "git switch -q -c release/1.0" },
+    { "write": { "path": "VERSION", "content": "1.0.0\n" } },
+    { "commit": { "message": "Cut release 1.0" } },
+    { "run": "git switch -q main" },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git push -q origin release/1.0" },
+    { "clone_teammate": true }
+  ],
+  "steps": [
+    {
+      "title": "Look at what the clone knows",
+      "why": "Switch the terminal dropdown on the right to `teammate` — that is the clone. It has the full log even though you never fetched anything after cloning.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline", "git remote -v"],
+      "expect": "Two commits and an origin pointing at a path ending in origin.git."
+    },
+    {
+      "title": "Find the branch you did not check out",
+      "why": "`git branch` shows only local branches — there is exactly one. `-a` reveals the remote-tracking branches, which are read-only bookmarks of what the server had at clone time.",
+      "cwd": "teammate",
+      "commands": ["git branch", "git branch -a"],
+      "expect": "One local branch, plus remotes/origin/main and remotes/origin/release/1.0."
+    },
+    {
+      "title": "The release branch was in the clone all along",
+      "why": "The commit exists locally already. Creating a local branch from it needs no network at all — proof that clone copied the whole object database, not just the checked-out files.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline origin/release/1.0", "git switch -c release/1.0 origin/release/1.0"],
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "cwd": "teammate", "equals": "release/1.0",
+          "label": "you are on a local release/1.0", "hint": "git switch -c release/1.0 origin/release/1.0" }
+      ]
+    },
+    {
+      "title": "See the tracking relationship git set up for you",
+      "why": "Because the branch was created from `origin/release/1.0`, git recorded an upstream. That is what lets you type a bare `git push` or `git pull` later without naming anything.",
+      "cwd": "teammate",
+      "commands": ["git status -sb", "git config --get branch.release/1.0.merge", "git branch -vv"]
+    },
+    {
+      "title": "Look at the server side",
+      "why": "origin.git is a bare repository: all the git data, no working tree. That is what every server-side repo is — GitHub is a bare repo with a website bolted on.",
+      "cwd": "origin",
+      "commands": ["git config --get core.bare", "ls", "git log --oneline main"],
+      "expect": "core.bare = true, and directories like objects/ and refs/ instead of your files."
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "cwd": "teammate", "equals": "release/1.0",
+      "label": "the clone has a local release/1.0 checked out",
+      "hint": "git switch -c release/1.0 origin/release/1.0 (run it in the teammate clone)" },
+    { "cmd": "git config --get branch.release/1.0.remote", "cwd": "teammate", "equals": "origin",
+      "label": "it tracks origin",
+      "hint": "create it from origin/release/1.0 so git records the upstream automatically" },
+    { "cmd": "cat VERSION", "cwd": "teammate", "contains": "1.0.0",
+      "label": "the release file is in the clone's working tree" },
+    { "cmd": "git config --get core.bare", "cwd": "origin", "equals": "true",
+      "label": "the server repo is bare, as every server repo is" }
+  ],
+  "pitfalls": [
+    "`git clone --depth 1` gives a shallow clone: fast, but `git log` and `git bisect` are crippled until you `--unshallow`.",
+    "Remote-tracking branches like `origin/main` do not update by themselves. They move only when you fetch or pull.",
+    "You cannot commit on `origin/main` — it is a bookmark, not a branch. Checking it out gives you a detached HEAD."
+  ],
+  "cheatsheet": [
+    ["git clone <url>", "full copy of the object database plus one checked-out branch"],
+    ["git clone <url> <dir>", "clone into a directory of your choosing"],
+    ["git branch -a", "local branches plus remote-tracking bookmarks"],
+    ["git switch -c <b> origin/<b>", "local branch from a remote one, with tracking set up"],
+    ["git branch -vv", "each branch, its upstream and its ahead/behind counts"],
+    ["git clone --bare <url>", "the server-shaped copy: no working tree"]
+  ]
+}

@@ -1,0 +1,83 @@
+{
+  "id": "snapshots-commit-a-trap",
+  "title": "The -a flag, and the file it silently leaves behind",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 6,
+  "duration_min": 8,
+  "summary": "git commit -a feels like 'commit everything'. It is not. Find the gap the hard way, then learn the habit that closes it.",
+  "concepts": ["commit -a", "tracked vs untracked", "git add -A", "reviewing before committing"],
+  "mental_model": "`-a` means 'stage every *tracked* file that changed'. A brand-new file has never been tracked, so it is invisible to `-a` — and to the commit you thought was complete.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "write": { "path": "app.py", "content": "from pump import RPM\n\nprint(RPM)\n" } },
+    { "commit": { "message": "Add pump and app" } },
+    { "write": { "path": "pump.py", "content": "from limits import MAX_RPM\n\nRPM = 1600\n" } },
+    { "write": { "path": "limits.py", "content": "MAX_RPM = 2000\n" } }
+  ],
+  "steps": [
+    {
+      "title": "A change split across an old file and a new one",
+      "why": "pump.py was modified and now imports limits.py, which is brand new. Logically this is one change. Git sees two very different kinds of file.",
+      "commands": ["git status --short", "cat pump.py"]
+    },
+    {
+      "title": "Commit with -a and feel good about it",
+      "why": "It succeeds, reports a file changed, and looks complete. Nothing warns you that half the change was left behind.",
+      "commands": ["git commit -a -m \"Raise pump limit\"", "git show --stat HEAD"],
+      "expect": "One file in the commit: pump.py. limits.py is nowhere."
+    },
+    {
+      "title": "Find the break",
+      "why": "The committed tree imports a module that does not exist in it. On your machine everything works, because the file is sitting there untracked. In CI, it is an ImportError.",
+      "commands": ["git status --short", "git ls-tree -r HEAD --name-only", "git grep -n \"import\" HEAD -- pump.py"],
+      "expect": "HEAD contains an import of limits, but no limits.py."
+    },
+    {
+      "title": "Prove it the way CI would",
+      "why": "`git stash -u` sets your working tree to exactly what the commit contains. This is the cheapest possible way to see your commit through someone else's eyes before you push it.",
+      "commands": ["git stash -u", "ls", "git stash pop", "ls"],
+      "expect": "limits.py vanishes while stashed — that is the state you just committed."
+    },
+    {
+      "title": "Fix it into the same commit",
+      "why": "`git add -A` stages everything including new and deleted files. Amending folds it into the existing commit so history never records the broken state.",
+      "commands": ["git add -A", "git commit --amend --no-edit", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": ["pump.py", "limits.py"],
+          "label": "both files are in the commit",
+          "hint": "git add -A, then git commit --amend --no-edit" }
+      ]
+    },
+    {
+      "title": "The habit that prevents it",
+      "why": "Run `git status --short` and `git diff --staged` before every commit. Two seconds, and it catches this class of mistake along with stray debug lines and accidentally staged secrets.",
+      "commands": ["git status --short", "git diff --staged --stat", "git log --oneline"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-tree -r HEAD --name-only", "contains": ["pump.py", "limits.py", "app.py"],
+      "label": "the commit contains the whole change, new file included",
+      "hint": "-a skips untracked files; git add -A does not" },
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "it was folded into the existing commit, not tacked on as a fixup",
+      "hint": "git commit --amend --no-edit" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "nothing left behind in the working tree" }
+  ],
+  "pitfalls": [
+    "`git commit -am \"msg\"` is the same trap with fewer keystrokes. New files are still skipped.",
+    "`-a` also stages deletions of tracked files, which is occasionally a surprise in the other direction.",
+    "`git add .` stages the current directory downwards only. From a subdirectory it quietly misses changes elsewhere; `git add -A` does not.",
+    "A CI job that runs from a fresh clone is the honest test of whether your commit is complete."
+  ],
+  "cheatsheet": [
+    ["git commit -a", "stage modified TRACKED files, then commit"],
+    ["git add -A", "stage everything: new, modified and deleted"],
+    ["git add .", "stage from the current directory down"],
+    ["git status --short", "the two-second pre-commit check"],
+    ["git stash -u", "temporarily see your tree exactly as committed"],
+    ["git ls-tree -r HEAD --name-only", "what a commit actually contains"]
+  ]
+}

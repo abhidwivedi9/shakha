@@ -1,5 +1,5 @@
 {
-  "id": "S04-reflog-rescue",
+  "id": "undo-reflog-rescue",
   "title": "You ran reset --hard and lost two commits. Get them back.",
   "category": "undo",
   "level": "intermediate",

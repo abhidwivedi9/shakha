@@ -1,0 +1,96 @@
+{
+  "id": "setup-gitignore",
+  "title": "Ignore the noise — and rescue a file you already tracked",
+  "category": "setup",
+  "level": "beginner",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "Build a .gitignore that hides build output and secrets, then handle the case everyone hits: a file that .gitignore refuses to ignore because it is already tracked.",
+  "concepts": [".gitignore patterns", "negation", "check-ignore", "rm --cached", "tracked beats ignored"],
+  "mental_model": "gitignore only decides whether git *starts* tracking a file. Once a file is tracked, gitignore is ignored. Untrack it first, then the rule applies.",
+  "danger": "`git rm --cached .env` removes the file from git but leaves it on disk — and it stays in every past commit. Ignoring a secret after committing it does not un-leak it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": ".env", "content": "API_KEY=sk-live-do-not-share\n" } },
+    { "commit": { "message": "Add app and env file" } },
+    { "write": { "path": "build/output.bin", "content": "binary-ish\n" } },
+    { "write": { "path": "build/keep.md", "content": "This one matters.\n" } },
+    { "write": { "path": "debug.log", "content": "line 1\n" } },
+    { "write": { "path": "src/trace.log", "content": "nested log\n" } },
+    { "write": { "path": "notes.tmp", "content": "scratch\n" } }
+  ],
+  "steps": [
+    {
+      "title": "See the noise",
+      "why": "Five untracked files, only one of which anyone wants in history. Untracked noise is not harmless — it hides the files you actually meant to add.",
+      "run": "git status --short"
+    },
+    {
+      "title": "Write the ignore rules",
+      "why": "`*.log` matches at every depth. A trailing slash means 'directory'. A leading `!` negates a previous rule, which is how you keep one file inside an ignored directory.",
+      "actions": [
+        { "write": { "path": ".gitignore", "content": "# build output\nbuild/\n!build/keep.md\n\n# logs and scratch files, at any depth\n*.log\n*.tmp\n\n# never commit secrets\n.env\n" } }
+      ],
+      "commands": ["git status --short"],
+      "expect": "Only .gitignore and build/keep.md remain untracked — and .env is still listed, which is the lesson."
+    },
+    {
+      "title": "Ask git why a file is ignored",
+      "why": "`check-ignore -v` prints the file, line number and pattern responsible. Guessing at gitignore behaviour is a waste of an afternoon; this command answers it outright.",
+      "commands": ["git check-ignore -v debug.log src/trace.log build/output.bin notes.tmp"],
+      "expect": "Each file mapped to the exact .gitignore line that catches it."
+    },
+    {
+      "title": "The negation that does not work by accident",
+      "why": "`build/` excludes the whole directory, so git never looks inside it — and `!build/keep.md` cannot rescue a file from a directory git skipped. The fix is to ignore the *contents*, not the directory.",
+      "actions": [
+        { "write": { "path": ".gitignore", "content": "# build output, but keep the notes\nbuild/*\n!build/keep.md\n\n# logs and scratch files, at any depth\n*.log\n*.tmp\n\n# never commit secrets\n.env\n" } }
+      ],
+      "commands": ["git status --short", "git check-ignore -v build/keep.md"],
+      "expect": "build/keep.md is now untracked-and-addable; check-ignore reports nothing for it."
+    },
+    {
+      "title": "The file gitignore will not ignore",
+      "why": "`.env` is already tracked from the setup commit, so the rule has no effect. This is the single most common gitignore complaint, and the answer is always the same: untrack it.",
+      "commands": ["git ls-files", "git rm --cached .env", "git status --short"],
+      "expect": "'rm .env' staged as a deletion, and .env disappears from the untracked list because now the rule applies."
+    },
+    {
+      "title": "Commit the cleanup",
+      "why": "The commit records two things: the ignore rules, and the fact that .env is no longer tracked. The file itself is untouched on disk — `--cached` only removes it from the index.",
+      "commands": ["git add -A", "git commit -m \"Ignore build output, logs and secrets\"", "git status --short"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the tree is clean" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "not_contains": ".env",
+      "label": ".env is no longer tracked",
+      "hint": "git rm --cached .env, then commit" },
+    { "cmd": "cat .env", "contains": "API_KEY",
+      "label": "…but the file is still on disk, because --cached only touches the index" },
+    { "cmd": "git ls-files", "contains": "build/keep.md",
+      "label": "build/keep.md was rescued from the ignored directory",
+      "hint": "ignore build/* rather than build/, then negate with !build/keep.md" },
+    { "cmd": "git ls-files", "not_contains": ["debug.log", "trace.log", "notes.tmp", "output.bin"],
+      "label": "no logs, scratch files or build output got committed" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "A tracked file ignores .gitignore entirely. `git rm --cached <file>` is the fix.",
+    "`build/` and `build/*` behave differently the moment you want to negate something inside. Use `build/*` when you need an exception.",
+    "Committing a secret then ignoring it leaves the secret in history. Rotate the key — a rewrite alone is not enough once it has been pushed.",
+    "Personal noise (editor swap files, .DS_Store) belongs in `core.excludesfile` globally, not in a shared project's .gitignore."
+  ],
+  "cheatsheet": [
+    ["git check-ignore -v <path>", "which rule ignores this file, and on what line"],
+    ["git status --ignored", "show ignored files too"],
+    ["git rm --cached <file>", "untrack but keep on disk"],
+    ["git add -f <file>", "stage a file despite the ignore rules"],
+    ["git config --global core.excludesfile ~/.gitignore_global", "personal ignores, everywhere"],
+    ["git clean -ndX", "dry-run: which ignored files would be deleted"]
+  ]
+}
