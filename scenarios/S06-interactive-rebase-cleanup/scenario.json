@@ -1,0 +1,122 @@
+{
+  "id": "S06-interactive-rebase-cleanup",
+  "title": "Turn five messy commits into a reviewable branch",
+  "category": "rebase",
+  "level": "advanced",
+  "order": 1,
+  "duration_min": 18,
+  "summary": "Your branch has 'wip', 'fix', 'fix again' and a typo commit. Use interactive rebase to squash, reword and drop until the history says something honest.",
+  "concepts": ["rebase -i", "squash vs fixup", "reword", "drop", "--autosquash", "rewritten shas"],
+  "mental_model": "Interactive rebase hands you a todo list — one line per commit, oldest first — and then replays the commits according to whatever you wrote. You are not editing history in place; you are creating brand-new commits and moving the branch to them.",
+  "danger": "Every rebased commit gets a new sha. If anyone else has pulled this branch, rewriting it forces them into a painful reconciliation. Rebase your own unpushed work freely; think hard before rewriting shared branches.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "def main():\n    print('controller starting')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/dosing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    pass\n" } },
+    { "commit": { "message": "wip dosing" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.0\n" } },
+    { "commit": { "message": "fix" } },
+    { "write": { "path": "debug.log", "content": "trace: dose called 41 times\n" } },
+    { "commit": { "message": "add debug log oops" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('dose must be positive')\n    return ml * 1.0\n" } },
+    { "commit": { "message": "fix again" } },
+    { "write": { "path": "README.md", "content": "# Tank Controller\n\nAutomatic dosing supported.\n" } },
+    { "commit": { "message": "Documnet dosing feature" } }
+  ],
+  "steps": [
+    {
+      "title": "Look at what you would be asking someone to review",
+      "why": "Five commits, three of which say nothing, one that commits a debug log by accident, and a typo in the last message. Nobody can review this, and `git bisect` cannot use it either.",
+      "commands": ["git log --oneline main..HEAD"]
+    },
+    {
+      "title": "Read the todo list rebase would give you",
+      "why": "This is exactly what `git rebase -i main` opens in your editor: one line per commit, oldest at the top, each starting with a command word. `pick` means keep it as is.",
+      "commands": ["git log --reverse --pretty=format:'pick %h %s' main..HEAD"],
+      "expect": "Five pick lines — the raw material of the rebase."
+    },
+    {
+      "title": "Drop the accidental debug log commit first",
+      "why": "Deleting a line from the todo list drops that commit entirely, as if it was never written — its changes go with it. Do this before squashing: order matters, because `fixup` folds a commit into whatever line sits above it, and you do not want good code folded into a commit you are about to delete.",
+      "actions": [
+        { "run": "git rebase -i main",
+          "env": { "GIT_SEQUENCE_EDITOR": "sed -i '/add debug log oops/d'" } }
+      ],
+      "commands": ["git log --oneline main..HEAD", "git status --short"],
+      "expect": "Four commits become three, and debug.log is gone from the tree.",
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": "debug.log",
+          "label": "debug.log is no longer in the tree" }
+      ]
+    },
+    {
+      "title": "Squash the fix commits into the real one",
+      "why": "`squash` folds a commit into the one above it and opens an editor for a combined message; `fixup` does the same but throws the folded message away — which is right for a commit called 'fix'. The dashboard scripts the todo editor here; `-i` on your own machine just opens it in your editor instead.",
+      "actions": [
+        { "run": "git rebase -i main",
+          "env": { "GIT_SEQUENCE_EDITOR": "sed -i -e '2s/^pick/fixup/' -e '3s/^pick/fixup/'" } }
+      ],
+      "commands": ["git log --oneline main..HEAD", "cat dosing.py"],
+      "expect": "Both 'fix' commits are gone; their code lives inside the first commit.",
+      "verify": [
+        { "cmd": "git log --oneline main..HEAD", "lines": 2,
+          "label": "the branch is down to two commits" },
+        { "cmd": "cat dosing.py", "contains": "raise ValueError",
+          "label": "the folded-in code survived the squash" }
+      ]
+    },
+    {
+      "title": "Reword the two remaining messages",
+      "why": "A commit message is the only documentation that travels with the change forever. `reword` replays the commit untouched and reopens just its message. Here we set both messages non-interactively.",
+      "actions": [
+        { "run": "git rebase -i main",
+          "env": { "GIT_SEQUENCE_EDITOR": "sed -i 's/^pick/reword/'",
+                   "GIT_EDITOR": "sh -c 'if grep -q wip \"$1\" 2>/dev/null || grep -q Documnet \"$1\" 2>/dev/null; then if grep -q wip \"$1\"; then echo \"Add dosing with input validation\" > \"$1\"; else echo \"Document the dosing feature\" > \"$1\"; fi; fi' --" } }
+      ],
+      "commands": ["git log --oneline main..HEAD"],
+      "verify": [
+        { "cmd": "git log --pretty=%s main..HEAD", "not_contains": ["wip", "Documnet"],
+          "label": "no wip or typo messages remain" }
+      ]
+    },
+    {
+      "title": "Confirm the code survived the rewrite",
+      "why": "Rebase changed every sha on this branch, but the final tree should be identical apart from the dropped debug log. Diffing the branch against main is how you prove a rewrite was honest.",
+      "commands": ["git diff main..HEAD --stat", "cat dosing.py"]
+    },
+    {
+      "title": "The everyday shortcut: --autosquash",
+      "why": "In real work you rarely hand-edit the todo. Commit a follow-up with `git commit --fixup=<sha>` and later `git rebase -i --autosquash main` pre-arranges the list for you. This is the habit worth stealing.",
+      "commands": ["git log --oneline --graph main..HEAD"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..HEAD", "lines": 2,
+      "label": "the branch is down to two clean commits",
+      "hint": "fold the fix commits in, drop the debug log commit" },
+    { "cmd": "git log --pretty=%s main..HEAD", "not_contains": ["wip", "fix", "oops", "Documnet"],
+      "label": "no throwaway or misspelled commit messages remain" },
+    { "cmd": "git ls-files", "not_contains": "debug.log",
+      "label": "the accidental debug log never made it into the branch" },
+    { "cmd": "cat dosing.py", "contains": "raise ValueError",
+      "label": "the validation code from the squashed commits survived",
+      "hint": "squashing must keep the code and lose only the noise" }
+  ],
+  "pitfalls": [
+    "Rebasing a branch that others have pulled forces everyone else to recover manually. Rewrite only what is still yours.",
+    "If a rebase hits a conflict it pauses mid-flight: resolve, `git add`, then `git rebase --continue` — never `git commit`.",
+    "`git rebase --abort` returns you to exactly where you started, at any point before the rebase finishes.",
+    "The reflog records the pre-rebase position, so even a rebase you regret is recoverable with `git reset --hard HEAD@{n}`."
+  ],
+  "cheatsheet": [
+    ["git rebase -i <base>", "open the todo list for every commit since base"],
+    ["pick / reword / edit", "keep / change message / stop and amend"],
+    ["squash / fixup", "fold into the commit above, with / without its message"],
+    ["drop", "remove the commit entirely"],
+    ["git commit --fixup=<sha>", "mark a commit as a fix for an earlier one"],
+    ["git rebase -i --autosquash <base>", "arrange the fixups automatically"],
+    ["git rebase --continue / --abort", "resume after a conflict / give up safely"]
+  ]
+}

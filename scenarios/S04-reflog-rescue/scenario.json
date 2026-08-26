@@ -1,0 +1,92 @@
+{
+  "id": "S04-reflog-rescue",
+  "title": "You ran reset --hard and lost two commits. Get them back.",
+  "category": "undo",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "Destroy a day of work with one command, then recover all of it. The reflog is the single most valuable thing a git user can know about.",
+  "concepts": ["reset --soft/--mixed/--hard", "reflog", "HEAD@{n}", "ORIG_HEAD", "dangling commits"],
+  "mental_model": "Commits are almost never deleted. `reset` only moves a branch pointer; the commits it moved away from are still in the object store, and the reflog wrote down where the pointer used to be. Recovery is just pointing the branch back.",
+  "danger": "`reset --hard` also throws away uncommitted working-tree changes, and those are NOT in the reflog. Committed work is recoverable; unsaved edits are not.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "filter.py", "content": "def clean(water):\n    return water\n" } },
+    { "commit": { "message": "Add filter skeleton" } },
+    { "write": { "path": "filter.py", "content": "def clean(water):\n    water.remove_debris()\n    return water\n" } },
+    { "commit": { "message": "Remove debris in filter" } },
+    { "write": { "path": "filter.py", "content": "def clean(water):\n    water.remove_debris()\n    water.uv_sterilise()\n    return water\n" } },
+    { "commit": { "message": "Add UV sterilisation step" } }
+  ],
+  "steps": [
+    {
+      "title": "Note what you are about to lose",
+      "why": "Three commits. Write down that top subject line — in a moment it will vanish from `git log` entirely and you will need to recognise it when it reappears.",
+      "run": "git log --oneline"
+    },
+    {
+      "title": "The three resets, explained by doing the safe one",
+      "why": "`--soft` moves the branch pointer and keeps everything staged. Nothing is lost; the changes from the undone commit are sitting in your index, ready to be recommitted differently. This is the reset you actually want most of the time.",
+      "commands": ["git reset --soft HEAD~1", "git status --short"],
+      "expect": "The UV change is now staged, not committed."
+    },
+    {
+      "title": "Put it back",
+      "why": "Recommitting restores the state. Notice the sha changed — a commit is defined by its content AND its parent AND its message, so a recommit is a different object even with identical content.",
+      "commands": ["git commit -m \"Add UV sterilisation step\"", "git log --oneline"]
+    },
+    {
+      "title": "Now do the damage",
+      "why": "`--hard` moves the pointer and forcibly rewrites the working tree to match. Two commits just disappeared from history and the file on disk reverted. This is the moment people panic.",
+      "commands": ["git reset --hard HEAD~2", "git log --oneline", "cat filter.py"],
+      "expect": "Only one commit left, and filter.py lost its debris and UV lines."
+    },
+    {
+      "title": "Look at the reflog — the thing that saves you",
+      "why": "The reflog is a local journal of every position HEAD has held, kept for 90 days by default. It is not history; it is a record of pointer movements. Your 'lost' commits are right there, listed with the sha you need.",
+      "commands": ["git reflog"],
+      "expect": "Entries reading 'reset: moving to HEAD~2', and above them your commits."
+    },
+    {
+      "title": "Point the branch back and reclaim everything",
+      "why": "`HEAD@{1}` means 'wherever HEAD was one move ago'. Resetting hard onto it moves the branch back to the pre-disaster commit. All three commits return, files and all. Nothing was ever actually deleted.",
+      "commands": ["git reset --hard HEAD@{1}", "git log --oneline", "cat filter.py"],
+      "verify": [
+        { "cmd": "git log --oneline", "contains": "Add UV sterilisation step",
+          "label": "the lost commits are back",
+          "hint": "find the pre-reset sha in git reflog, then git reset --hard <sha>" }
+      ]
+    },
+    {
+      "title": "The other escape hatch",
+      "why": "Git also writes ORIG_HEAD before dangerous operations (reset, merge, rebase). `git reset --hard ORIG_HEAD` undoes the last one without you having to read the reflog at all.",
+      "commands": ["git rev-parse --short ORIG_HEAD", "git log --oneline -1 ORIG_HEAD"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "all three commits are back on main",
+      "hint": "git reflog, find the sha before the reset, then git reset --hard <sha>" },
+    { "cmd": "git log --oneline", "contains": ["Add UV sterilisation step", "Remove debris in filter"],
+      "label": "both lost commits recovered by subject" },
+    { "cmd": "cat filter.py", "contains": "uv_sterilise",
+      "label": "the working tree content came back too" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "working tree is clean" }
+  ],
+  "pitfalls": [
+    "The reflog is per-clone and never pushed. A fresh clone has no reflog — recovery must happen on the machine where the mistake was made.",
+    "`git reset --hard` with uncommitted changes is genuinely destructive. `git stash` first if you are unsure.",
+    "`git reset` moves a branch; `git revert` adds a new commit that undoes an old one. On a shared branch, revert is the honest choice.",
+    "`git fsck --lost-found` finds dangling commits even when the reflog has been pruned."
+  ],
+  "cheatsheet": [
+    ["git reset --soft <ref>", "move the branch, keep everything staged"],
+    ["git reset --mixed <ref>", "move the branch, keep the files, unstage (the default)"],
+    ["git reset --hard <ref>", "move the branch and overwrite the working tree"],
+    ["git reflog", "every position HEAD has held on this machine"],
+    ["git reset --hard HEAD@{1}", "undo the last pointer move"],
+    ["git reset --hard ORIG_HEAD", "undo the last reset/merge/rebase"],
+    ["git fsck --lost-found", "hunt for commits nothing points at any more"]
+  ]
+}

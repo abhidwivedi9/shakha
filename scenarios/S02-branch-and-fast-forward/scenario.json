@@ -1,0 +1,108 @@
+{
+  "id": "S02-branch-and-fast-forward",
+  "title": "Branch, switch, and the two kinds of merge",
+  "category": "branching",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "A branch is a 17-byte file containing a commit id. Create one, commit on it, and watch the difference between a fast-forward merge and a real merge commit.",
+  "concepts": ["branch pointer", "HEAD", "fast-forward", "merge commit", "--no-ff"],
+  "mental_model": "A branch is not a copy of your code. It is a sticky note with a commit id written on it. `switch` moves HEAD to a different sticky note and rewrites your working tree to match. That is the entire feature.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "def run_pump(seconds):\n    print('pump on for', seconds)\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "write": { "path": "sensor.py", "content": "def read_temp():\n    return 26.4\n" } },
+    { "commit": { "message": "Add temperature sensor" } }
+  ],
+  "steps": [
+    {
+      "title": "Prove a branch is just a file",
+      "why": "Before any theory, look at the thing itself. `refs/heads/main` is a file whose entire content is one commit id. Everything you will ever hear about branching is built on that.",
+      "commands": ["git rev-parse main", "cat .git/refs/heads/main"],
+      "expect": "The same 40-character sha printed twice."
+    },
+    {
+      "title": "Create a branch and move onto it",
+      "why": "`switch -c` creates the sticky note and points HEAD at it. No files change, no commits are made — both branches name the same commit right now.",
+      "run": "git switch -c feature/lighting",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/lighting",
+          "label": "you are on feature/lighting", "hint": "git switch -c feature/lighting" }
+      ]
+    },
+    {
+      "title": "Commit on the branch",
+      "why": "Now the two sticky notes diverge: feature/lighting advances, main stays put. Only the branch you have checked out moves when you commit.",
+      "actions": [
+        { "write": { "path": "lights.py", "content": "SCHEDULE = {'on': '08:00', 'off': '22:00'}\n" } }
+      ],
+      "commands": ["git add lights.py", "git commit -m \"Add lighting schedule\""],
+      "verify": [
+        { "cmd": "git log --oneline main..feature/lighting", "not_empty": true,
+          "label": "feature/lighting is ahead of main" }
+      ]
+    },
+    {
+      "title": "Look at the divergence",
+      "why": "`main..feature/lighting` means \"commits reachable from the second, not the first\". This two-dot range syntax shows up everywhere — in log, diff, and code review tooling.",
+      "commands": ["git log --oneline --all --decorate --graph"]
+    },
+    {
+      "title": "Fast-forward merge",
+      "why": "main has not moved since the branch point, so git does not need to create a merge commit — it just slides the main pointer forward. History stays a straight line. This is why some teams love fast-forward and others ban it: it erases the fact a branch existed.",
+      "commands": ["git switch main", "git merge feature/lighting"],
+      "expect": "Output containing 'Fast-forward'.",
+      "verify": [
+        { "cmd": "git log --oneline main", "contains": "Add lighting schedule",
+          "label": "main now contains the lighting commit" }
+      ]
+    },
+    {
+      "title": "Now force a real merge commit",
+      "why": "`--no-ff` tells git to make a merge commit even when it could fast-forward. The merge commit has two parents, which is what makes the branch visible in history forever.",
+      "actions": [
+        { "run": "git switch -c feature/alarm" },
+        { "write": { "path": "alarm.py", "content": "THRESHOLD_C = 29.0\n" } },
+        { "commit": { "message": "Add temperature alarm" } },
+        { "run": "git switch main" }
+      ],
+      "commands": ["git merge --no-ff -m \"Merge alarm feature\" feature/alarm"],
+      "verify": [
+        { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+          "label": "HEAD is a merge commit (two parents)",
+          "hint": "use git merge --no-ff so git cannot slide the pointer" }
+      ]
+    },
+    {
+      "title": "Clean up the merged branches",
+      "why": "`branch -d` refuses to delete a branch that is not merged — a safety net worth trusting. `-D` overrides it, and is how people lose work.",
+      "commands": ["git branch -d feature/lighting", "git branch --merged main"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "you finished on main" },
+    { "cmd": "git log --oneline main", "contains": ["Add lighting schedule", "Add temperature alarm"],
+      "label": "both features reached main" },
+    { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "the last merge was a real merge commit, not a fast-forward",
+      "hint": "merge the alarm branch with --no-ff" },
+    { "cmd": "git branch --list feature/lighting", "empty": true,
+      "label": "the merged lighting branch was deleted",
+      "hint": "git branch -d feature/lighting" }
+  ],
+  "pitfalls": [
+    "`git switch` with uncommitted changes carries them along — that surprises people who expect isolation. Commit or stash first.",
+    "`git branch feature` creates the branch but does NOT move to it. `git switch -c feature` does both.",
+    "Deleting a branch never deletes commits. They stay reachable through the reflog for weeks."
+  ],
+  "cheatsheet": [
+    ["git switch -c <name>", "create a branch and move onto it"],
+    ["git switch -", "jump back to the previous branch"],
+    ["git merge <branch>", "merge into the branch you are standing on"],
+    ["git merge --no-ff <branch>", "always create a merge commit"],
+    ["git log --oneline --graph --all", "see the shape of history"],
+    ["git branch --merged main", "which branches are safe to delete"]
+  ]
+}

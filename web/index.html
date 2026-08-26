@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shakha — learn git by doing it</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="glyph">&#9282;</span>
+    <span>Shakha</span>
+    <small>every scenario runs real git</small>
+  </div>
+  <div class="topbar-right">
+    <input id="search" type="search" placeholder="Search scenarios…  (/)" autocomplete="off">
+    <div class="progress-pill"><span id="progress-count">0</span> solved</div>
+  </div>
+</header>
+
+<main class="layout">
+
+  <aside class="pane catalog" id="catalog">
+    <div class="pane-head">Scenarios <span class="muted" id="catalog-total"></span></div>
+    <div id="catalog-list" class="catalog-list"></div>
+  </aside>
+
+  <section class="pane lesson" id="lesson">
+    <div class="empty-state">
+      <h1>Pick a scenario</h1>
+      <p>Each one builds a real git repository on disk. The buttons run real commands,
+         the graph on the right is read straight out of that repository, and the
+         checks grade the repo — not your clicking.</p>
+    </div>
+  </section>
+
+  <aside class="pane repo" id="repo">
+    <div class="pane-head">Repository state</div>
+    <div id="repo-body" class="repo-body">
+      <p class="muted pad">No sandbox yet.</p>
+    </div>
+    <div class="terminal">
+      <div class="terminal-head">
+        <span>terminal</span>
+        <select id="term-cwd" title="which clone to run in">
+          <option value="repo">repo</option>
+          <option value="teammate">teammate</option>
+        </select>
+      </div>
+      <div id="term-out" class="terminal-out"></div>
+      <div class="terminal-input">
+        <span class="prompt">$</span>
+        <input id="term-in" type="text" placeholder="git status" autocomplete="off" spellcheck="false" disabled>
+      </div>
+    </div>
+  </aside>
+
+</main>
+
+<script src="/app.js"></script>
+</body>
+</html>

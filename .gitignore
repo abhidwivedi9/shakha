@@ -1,0 +1,9 @@
+# Learner sandboxes: real git repos, rebuilt on demand. Never committed.
+workspaces/
+
+# Local progress state
+progress.json
+
+__pycache__/
+*.pyc
+.DS_Store

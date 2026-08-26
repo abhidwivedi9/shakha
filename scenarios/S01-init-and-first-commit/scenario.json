@@ -1,0 +1,80 @@
+{
+  "id": "S01-init-and-first-commit",
+  "title": "Start a repo and make the first commit",
+  "category": "setup",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 8,
+  "summary": "Turn a plain folder into a git repository, then move a file through the three areas until it becomes a permanent commit.",
+  "concepts": ["working tree", "index (staging area)", "commit", "HEAD", "branch"],
+  "mental_model": "Git has three places a file can be: the working tree (your folder), the index (the shopping basket), and the repository (permanent history). `add` moves a file into the basket, `commit` pays for the basket.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Aquarium Controller\n\nFirmware for the tank controller.\n" } },
+    { "write": { "path": "notes.txt", "content": "temp sensor reads 26.4C\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Look before you touch anything",
+      "why": "`git status` is the single most useful command in git. It tells you which of the three areas each file is sitting in. Both files are untracked: git can see them but is not yet responsible for them.",
+      "run": "git status --short",
+      "expect": "Two lines starting with ?? -- the code for untracked."
+    },
+    {
+      "title": "Stage the README",
+      "why": "`add` copies the current content of the file into the index. Note the word *current*: if you edit the file after adding it, the edit is NOT staged. That surprises people constantly.",
+      "run": "git add README.md",
+      "verify": [
+        { "cmd": "git diff --cached --name-only", "contains": "README.md",
+          "label": "README.md is staged", "hint": "run: git add README.md" }
+      ]
+    },
+    {
+      "title": "See the split",
+      "why": "Now status shows two groups: changes to be committed (the index) and untracked files. This split is the whole point of the staging area -- you choose what goes into the next commit.",
+      "run": "git status --short"
+    },
+    {
+      "title": "Commit what is staged",
+      "why": "The commit records the index, not the working tree. notes.txt is still untracked and will not be in this commit. A commit stores a full snapshot plus a pointer to its parent.",
+      "commands": ["git commit -m \"Add project readme\""],
+      "verify": [
+        { "cmd": "git log --oneline", "not_empty": true, "label": "a commit exists",
+          "hint": "run: git commit -m \"Add project readme\"" }
+      ]
+    },
+    {
+      "title": "Inspect what you just made",
+      "why": "Every commit has a SHA, an author, a message and a tree. `--stat` shows which files it touched. Notice notes.txt is absent -- exactly as designed.",
+      "run": "git show --stat HEAD"
+    },
+    {
+      "title": "See where HEAD points",
+      "why": "HEAD is a pointer to the branch you are on; the branch is a pointer to a commit. Three pointers, one line of output. Everything in git branching builds on this.",
+      "run": "git log --oneline --decorate -1"
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "you are on branch main" },
+    { "cmd": "git log --oneline", "not_empty": true,
+      "label": "at least one commit exists", "hint": "git add README.md && git commit -m \"...\"" },
+    { "cmd": "git ls-tree -r HEAD --name-only", "contains": "README.md",
+      "label": "README.md is committed", "hint": "stage it with git add before committing" },
+    { "cmd": "git status --porcelain --untracked-files=all", "contains": "?? notes.txt",
+      "label": "notes.txt was deliberately left untracked",
+      "hint": "this scenario wants notes.txt out of the commit -- do not add it" }
+  ],
+  "pitfalls": [
+    "Editing a file after `git add` does not update the staged copy -- you must add it again.",
+    "`git commit -a` skips the index for tracked files, but never picks up untracked files.",
+    "A commit message that says 'fix' costs a future colleague ten minutes. That colleague is usually you."
+  ],
+  "cheatsheet": [
+    ["git init -b main", "make the current folder a repo with main as the first branch"],
+    ["git status --short", "compact view of all three areas"],
+    ["git add <path>", "copy current file content into the index"],
+    ["git commit -m \"msg\"", "record the index as a permanent snapshot"],
+    ["git show --stat HEAD", "what did the latest commit actually change"]
+  ]
+}

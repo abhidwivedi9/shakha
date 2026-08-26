@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "shakha",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["shakhactl.py", "dashboard", "--no-open"],
+      "port": 4100
+    }
+  ]
+}

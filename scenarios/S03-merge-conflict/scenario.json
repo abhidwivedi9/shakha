@@ -1,0 +1,99 @@
+{
+  "id": "S03-merge-conflict",
+  "title": "Resolve a real merge conflict",
+  "category": "merging",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 15,
+  "summary": "Two branches edit the same line. Git stops, marks the file, and waits for a human. Read the markers, resolve them properly, and finish the merge.",
+  "concepts": ["conflict markers", "three-way merge", "merge base", "--ours / --theirs", "MERGE_HEAD"],
+  "mental_model": "A conflict is not an error. Git is saying: two people changed the same line and I refuse to guess which one is right. It hands you the file with both versions marked and pauses the merge until you commit a resolution.",
+  "danger": "Never resolve a conflict by deleting the half you do not understand. Read both sides, then write the line that is actually correct — often that is neither side verbatim.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "config.yaml", "content": "tank:\n  name: reef-01\n  target_temp_c: 25.0\n  ph: 8.1\n  pump_rpm: 1200\n" } },
+    { "commit": { "message": "Add tank config" } },
+    { "run": "git switch -q -c feature/warmer" },
+    { "write": { "path": "config.yaml", "content": "tank:\n  name: reef-01\n  target_temp_c: 26.5\n  ph: 8.1\n  pump_rpm: 1200\n" } },
+    { "commit": { "message": "Raise target temperature for coral growth" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "config.yaml", "content": "tank:\n  name: reef-01\n  target_temp_c: 24.0\n  ph: 8.1\n  pump_rpm: 1600\n" } },
+    { "commit": { "message": "Lower temperature and raise pump speed" } }
+  ],
+  "steps": [
+    {
+      "title": "See the two histories before merging",
+      "why": "Both branches changed target_temp_c from the same starting value. The merge base is the commit they share. A three-way merge compares base-to-ours and base-to-theirs; overlapping edits become a conflict.",
+      "commands": ["git log --oneline --graph --all --decorate", "git merge-base main feature/warmer"]
+    },
+    {
+      "title": "Trigger the conflict",
+      "why": "The merge stops halfway. Git has already merged the non-overlapping parts and left the file with markers where it could not decide. The repo is now in a MERGE_IN_PROGRESS state — look at the badge on the right.",
+      "run": "git merge feature/warmer",
+      "expect": "CONFLICT (content): Merge conflict in config.yaml — exit code 1 is normal here.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "UU config.yaml",
+          "label": "config.yaml is conflicted", "hint": "run: git merge feature/warmer" }
+      ]
+    },
+    {
+      "title": "Read the markers instead of fearing them",
+      "why": "`<<<<<<< HEAD` starts your side, `=======` splits, `>>>>>>> feature/warmer` ends their side. The pump_rpm line merged cleanly on its own — only the contested line is marked.",
+      "commands": ["git diff", "cat config.yaml"]
+    },
+    {
+      "title": "See each side on its own",
+      "why": "During a conflict git keeps three versions in the index: stage 1 base, stage 2 ours, stage 3 theirs. These commands print them without you having to untangle the markers by eye.",
+      "commands": ["git show :1:config.yaml", "git show :2:config.yaml", "git show :3:config.yaml"]
+    },
+    {
+      "title": "Resolve it — with a value neither side wrote",
+      "why": "The correct answer here is a compromise: 26.0. This is the point people miss — resolution means writing the right code, not picking a team. (Click config.yaml on the right to edit it yourself instead of using this button.)",
+      "actions": [
+        { "write": { "path": "config.yaml", "content": "tank:\n  name: reef-01\n  target_temp_c: 26.0\n  ph: 8.1\n  pump_rpm: 1600\n" } }
+      ],
+      "commands": ["git add config.yaml"],
+      "verify": [
+        { "cmd": "git status --porcelain", "not_contains": "UU ",
+          "label": "no conflicted files remain", "hint": "fix the markers, then git add config.yaml" }
+      ]
+    },
+    {
+      "title": "Finish the merge",
+      "why": "`git add` was you telling git the conflict is settled. The commit seals it, with two parents. Until you commit, `git merge --abort` would still put everything back exactly as it was.",
+      "commands": ["git commit --no-edit", "git log --oneline --graph -4"],
+      "verify": [
+        { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+          "label": "the merge commit exists" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "working tree is clean — the merge is finished",
+      "hint": "git add the resolved file, then git commit" },
+    { "cmd": "cat config.yaml", "not_contains": ["<<<<<<<", "=======", ">>>>>>>"],
+      "label": "no conflict markers were left in the file",
+      "hint": "this is the classic production incident: markers committed into a config file" },
+    { "cmd": "git rev-list --parents -n 1 HEAD", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "HEAD is the merge commit, with both branches as parents" },
+    { "cmd": "cat config.yaml", "contains": "pump_rpm: 1600",
+      "label": "the non-conflicting change from main survived",
+      "hint": "resolving must not throw away the parts git merged cleanly" }
+  ],
+  "pitfalls": [
+    "Committing conflict markers is one of the most common real outages — a YAML file with `<<<<<<<` in it fails to parse at deploy time.",
+    "`git checkout --ours <file>` takes your whole side of the file, not just the conflicted line. It is a blunt instrument.",
+    "`git merge --abort` is safe and complete until you commit. Reach for it when you are lost.",
+    "Enable `git config rerere.enabled true` and git remembers how you resolved a conflict, replaying it if the same one appears again."
+  ],
+  "cheatsheet": [
+    ["git merge <branch>", "start the merge"],
+    ["git status", "which files are conflicted"],
+    ["git show :2:<file>", "your side; :3: is theirs, :1: is the shared base"],
+    ["git checkout --ours <file>", "take your whole version of the file"],
+    ["git checkout --theirs <file>", "take their whole version"],
+    ["git add <file>", "mark the conflict as resolved"],
+    ["git merge --abort", "put everything back the way it was"]
+  ]
+}

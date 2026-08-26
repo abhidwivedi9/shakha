@@ -1,0 +1,103 @@
+{
+  "id": "S05-push-rejected",
+  "title": "Your push was rejected — a teammate got there first",
+  "category": "remotes",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 15,
+  "summary": "A real origin and a real teammate clone. They push, you push, git says no. Understand what non-fast-forward means and fix it without a force push.",
+  "concepts": ["origin", "remote-tracking branch", "fetch vs pull", "non-fast-forward", "--force-with-lease"],
+  "mental_model": "`origin/main` is not the server. It is your local memory of where main was on the server the last time you looked. `fetch` updates that memory. `pull` is fetch plus merge. A push is rejected when your memory is stale — you would be erasing commits you have never seen.",
+  "danger": "The tempting fix is `git push --force`. On a shared branch that deletes your teammate's commit from the server. `--force-with-lease` refuses to do exactly that, which is why it should be your default if you force at all.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Tank Controller\n" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Initial controller" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "as": "teammate",
+      "write": { "path": "sensor.py", "content": "def read_ph():\n    return 8.1\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Add pH sensor reading" } },
+    { "cwd": "teammate", "run": "git push -q origin main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\nRAMP_SECONDS = 5\n" } },
+    { "commit": { "message": "Ramp the pump instead of slamming it on" } }
+  ],
+  "steps": [
+    {
+      "title": "See what you think the world looks like",
+      "why": "Your local main has your ramp commit. origin/main still points at the initial commit, because nothing has told your clone otherwise. That gap is the whole scenario.",
+      "commands": ["git log --oneline --all --decorate --graph", "git status -sb"]
+    },
+    {
+      "title": "Try to push",
+      "why": "Rejected: non-fast-forward. Git will not move the server's branch to a commit that does not contain the server's current commit — that would silently delete your teammate's work.",
+      "run": "git push origin main",
+      "expect": "! [rejected] main -> main (fetch first). Exit code 1 is the point.",
+      "verify": [
+        { "cmd": "git rev-parse origin/main", "not_empty": true, "label": "origin/main exists locally" }
+      ]
+    },
+    {
+      "title": "Fetch — look, do not merge",
+      "why": "`fetch` downloads the new commits and moves origin/main. It touches nothing you are working on. This is the safe first move every single time, and the reason experienced people rarely type `pull`.",
+      "commands": ["git fetch origin", "git status -sb", "git log --oneline --all --decorate --graph"],
+      "expect": "Your branch and origin/main have diverged, 1 and 1 different commits."
+    },
+    {
+      "title": "See exactly what they did",
+      "why": "Before combining histories, read the other side. `origin/main...main` with three dots shows the commits unique to each. Reviewing this takes ten seconds and prevents most bad merges.",
+      "commands": ["git log --oneline --left-right --graph origin/main...main", "git diff main...origin/main --stat"]
+    },
+    {
+      "title": "Rebase your commit on top of theirs",
+      "why": "Rebase replays your commit as if you had written it after theirs, producing a straight line. Their commit is untouched; yours gets a new sha. Safe here because your commit has never been pushed anywhere.",
+      "commands": ["git rebase origin/main", "git log --oneline --graph --all --decorate"],
+      "verify": [
+        { "cmd": "git log --oneline origin/main..main", "lines": 1,
+          "label": "your work sits on top of theirs, as a single commit",
+          "hint": "git fetch origin, then git rebase origin/main" }
+      ]
+    },
+    {
+      "title": "Push, this time as a fast-forward",
+      "why": "Now your main contains origin/main, so the server can simply slide its pointer forward. No force, no lost work, no argument.",
+      "commands": ["git push origin main", "git log --oneline --all --decorate --graph"],
+      "verify": [
+        { "cmd": "git rev-parse main", "not_empty": true, "label": "push completed" }
+      ]
+    },
+    {
+      "title": "Confirm on the server itself",
+      "why": "origin.git is a real bare repository on disk. Reading its log proves this was never a simulation — both commits are genuinely there.",
+      "commands": ["git log --oneline main"],
+      "cwd": "origin"
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin",
+      "contains": ["Add pH sensor reading", "Ramp the pump instead of slamming it on"],
+      "label": "the server has both your commit and your teammate's",
+      "hint": "fetch, rebase onto origin/main, then push" },
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 3,
+      "label": "nothing was lost or duplicated on the server — exactly three commits",
+      "hint": "if you see more, you merged where a rebase was intended; if fewer, a force push ate a commit" },
+    { "cmd": "git status -sb", "not_contains": "ahead",
+      "label": "your local branch is in sync with origin/main" }
+  ],
+  "pitfalls": [
+    "`git pull` defaults to a merge, which sprinkles 'Merge branch main of ...' commits through history. `git pull --rebase` (or `git config pull.rebase true`) avoids that.",
+    "Never rebase a branch other people have already pulled — you rewrite shas they are building on.",
+    "`--force-with-lease` refuses to overwrite commits you have not seen. Plain `--force` does not check. Prefer the former, always.",
+    "`git fetch --prune` deletes remote-tracking branches for branches deleted on the server; without it, `git branch -r` fills with ghosts."
+  ],
+  "cheatsheet": [
+    ["git fetch origin", "update your memory of the server, change nothing else"],
+    ["git status -sb", "one line showing ahead/behind counts"],
+    ["git log --oneline origin/main..main", "commits you have that the server does not"],
+    ["git log --oneline main..origin/main", "commits the server has that you do not"],
+    ["git rebase origin/main", "replay your work on top of theirs"],
+    ["git pull --rebase", "fetch then rebase, in one step"],
+    ["git push --force-with-lease", "force, but refuse to erase unseen commits"]
+  ]
+}
