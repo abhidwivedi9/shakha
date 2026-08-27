@@ -1,0 +1,122 @@
+{
+  "id": "internals-refs-and-head",
+  "title": "Refs are files. HEAD is a file that names another file.",
+  "category": "internals",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 14,
+  "summary": "Open .git and read the branch, the tag and HEAD directly. Then move a branch by editing a ref, and understand packed-refs — the reason your branch file sometimes is not there.",
+  "concepts": ["refs/heads", "symbolic refs", "packed-refs", "update-ref", "show-ref", "detached HEAD as a raw sha"],
+  "mental_model": "A ref is a file containing a sha. HEAD is a file containing `ref: refs/heads/main` — a pointer to a pointer. Detaching HEAD means putting a raw sha in that file instead. Everything about branching follows from this.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Commit one" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Commit two" } },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Commit three" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\" HEAD~1" },
+    { "run": "git branch feature/experiment HEAD~2" }
+  ],
+  "steps": [
+    {
+      "title": "Look at the ref files",
+      "why": "Branches and tags are files under `.git/refs`, each containing one sha and a newline. There is no database, no index of branches — this is the whole storage layer for refs.",
+      "commands": ["sh -c 'find .git/refs -type f'", "sh -c 'cat .git/refs/heads/main'", "git rev-parse main", "sh -c 'cat .git/refs/tags/v1.0'"],
+      "expect": "The file's content and `git rev-parse` agree exactly.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(cat .git/refs/heads/main)\" = \"$(git rev-parse main)\" && echo same'",
+          "contains": "same", "label": "the branch file contains the commit sha" }
+      ]
+    },
+    {
+      "title": "Read HEAD",
+      "why": "HEAD does not contain a sha — it contains the NAME of a ref. That indirection is exactly what 'being on a branch' means, and why committing moves the branch rather than HEAD itself.",
+      "commands": ["sh -c 'cat .git/HEAD'", "git symbolic-ref HEAD", "git rev-parse HEAD", "git rev-parse --abbrev-ref HEAD"],
+      "expect": "ref: refs/heads/main — a pointer to a pointer."
+    },
+    {
+      "title": "Detach it and look again",
+      "why": "Checking out a commit writes a raw sha into HEAD instead of a ref name. That is the entire difference between attached and detached — one line in one file.",
+      "commands": ["git checkout -q HEAD~1", "sh -c 'cat .git/HEAD'", "sh -c 'git symbolic-ref HEAD 2>&1 | head -1'", "git status -sb", "git checkout -q main", "sh -c 'cat .git/HEAD'"],
+      "expect": "A bare sha while detached, and the ref line again afterwards.",
+      "verify": [
+        { "cmd": "git symbolic-ref HEAD", "equals": "refs/heads/main",
+          "label": "HEAD is attached to main again" }
+      ]
+    },
+    {
+      "title": "Move a branch by writing to its ref",
+      "why": "`update-ref` is the supported way to write a ref, and it records a reflog entry. It is exactly what commit, merge, reset and rebase all call at the end of their work.",
+      "commands": ["git rev-parse feature/experiment", "sh -c 'git update-ref refs/heads/feature/experiment $(git rev-parse main)'", "git log --oneline feature/experiment", "git reflog show feature/experiment"],
+      "expect": "The branch jumps to main's commit, with a reflog entry recording it.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(git rev-parse feature/experiment)\" = \"$(git rev-parse main)\" && echo moved'",
+          "contains": "moved", "label": "the branch was moved by writing its ref",
+          "hint": "git update-ref refs/heads/<branch> <sha>" }
+      ]
+    },
+    {
+      "title": "Create a branch with no branch command",
+      "why": "Writing a new ref file creates a branch. `git branch` is a convenience around this, plus a couple of safety checks — nothing more.",
+      "commands": ["sh -c 'git update-ref refs/heads/made-by-hand $(git rev-parse HEAD~2)'", "git branch -v", "sh -c 'cat .git/refs/heads/made-by-hand'", "git log --oneline made-by-hand"],
+      "verify": [
+        { "cmd": "git branch --list made-by-hand", "not_empty": true,
+          "label": "a branch created by writing a ref" }
+      ]
+    },
+    {
+      "title": "Pack the refs and watch the files vanish",
+      "why": "`pack-refs` moves refs into a single `.git/packed-refs` file for speed. This is why `cat .git/refs/heads/main` sometimes says no such file — the ref is real, it is just stored elsewhere.",
+      "commands": ["git pack-refs --all", "sh -c 'find .git/refs -type f | wc -l'", "sh -c 'cat .git/packed-refs'", "git rev-parse main", "git branch -a"],
+      "expect": "No loose ref files, one packed-refs file, and every command still working perfectly.",
+      "verify": [
+        { "cmd": "git rev-parse main", "not_empty": true,
+          "label": "refs still resolve after packing" },
+        { "cmd": "sh -c 'grep -c refs/heads/main .git/packed-refs'", "equals": "1",
+          "label": "main now lives in packed-refs",
+          "hint": "git pack-refs --all" }
+      ]
+    },
+    {
+      "title": "Use the command that reads both places",
+      "why": "`show-ref` and `for-each-ref` consult loose refs and packed-refs together. Any script that reads `.git/refs` directly is broken the moment someone runs gc — this is the practical reason plumbing exists.",
+      "commands": ["git show-ref", "git for-each-ref --format='%(refname) %(objecttype) %(objectname:short)'", "sh -c 'git update-ref -d refs/heads/made-by-hand && echo deleted'", "git show-ref"],
+      "verify": [
+        { "cmd": "git branch --list made-by-hand", "empty": true,
+          "label": "update-ref -d deletes a ref wherever it is stored" },
+        { "cmd": "git show-ref", "contains": "refs/heads/main",
+          "label": "show-ref reads loose and packed refs together" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git symbolic-ref HEAD", "equals": "refs/heads/main",
+      "label": "HEAD is an attached symbolic ref" },
+    { "cmd": "sh -c 'test \"$(git rev-parse feature/experiment)\" = \"$(git rev-parse main)\" && echo moved'",
+      "contains": "moved",
+      "label": "you moved a branch by writing its ref directly",
+      "hint": "git update-ref refs/heads/<branch> <sha>" },
+    { "cmd": "sh -c 'grep -c refs/heads/main .git/packed-refs'", "equals": "1",
+      "label": "refs were packed into packed-refs and still resolve" },
+    { "cmd": "git branch --list made-by-hand", "empty": true,
+      "label": "the hand-made branch was deleted with update-ref -d" },
+    { "cmd": "git fsck --full", "empty": true, "label": "every ref points at a real object" }
+  ],
+  "pitfalls": [
+    "Never read `.git/refs/...` in a script. After `git gc` or `git pack-refs` the file is gone and the ref lives in packed-refs — use `git rev-parse` or `git show-ref`.",
+    "Writing a ref file by hand with `echo` skips the reflog entry, so your safety net for that move does not exist. Use `git update-ref`.",
+    "A branch name with a slash is a directory on disk: `refs/heads/feature/x`. That is why you cannot have both a branch `feature` and a branch `feature/x`.",
+    "`git update-ref -d` is the only correct way to delete a ref — deleting the file misses the packed-refs copy and the ref reappears."
+  ],
+  "cheatsheet": [
+    ["cat .git/HEAD", "ref: refs/heads/<branch>, or a raw sha when detached"],
+    ["git symbolic-ref HEAD", "which branch you are on"],
+    ["git rev-parse <ref>", "resolve any ref to a sha"],
+    ["git update-ref refs/heads/<b> <sha>", "move or create a branch"],
+    ["git update-ref -d refs/heads/<b>", "delete one"],
+    ["git pack-refs --all", "move loose refs into packed-refs"],
+    ["git show-ref / git for-each-ref", "read refs wherever they are stored"]
+  ]
+}

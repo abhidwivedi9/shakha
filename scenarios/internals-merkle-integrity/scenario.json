@@ -1,0 +1,131 @@
+{
+  "id": "internals-merkle-integrity",
+  "title": "Why you cannot quietly change history",
+  "category": "internals",
+  "level": "expert",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Each commit's hash covers its tree and its parent, so every commit's identity depends on everything before it. Try to alter an old commit in place and watch the whole chain refuse.",
+  "concepts": ["Merkle DAG", "hash chaining", "tamper evidence", "fsck detection", "signed commits", "rewrite means new shas"],
+  "mental_model": "A commit's sha covers its tree, its parent's sha, the author and the message. Change anything anywhere and every descendant's sha changes too. History is not protected by permissions — it is protected by arithmetic.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "ledger.txt", "content": "opening balance: 1000\n" } },
+    { "commit": { "message": "Open the ledger" } },
+    { "write": { "path": "ledger.txt", "content": "opening balance: 1000\npayment out: 250\n" } },
+    { "commit": { "message": "Record payment of 250" } },
+    { "write": { "path": "ledger.txt", "content": "opening balance: 1000\npayment out: 250\npayment out: 100\n" } },
+    { "commit": { "message": "Record payment of 100" } },
+    { "write": { "path": "ledger.txt", "content": "opening balance: 1000\npayment out: 250\npayment out: 100\nclosing balance: 650\n" } },
+    { "commit": { "message": "Close the ledger" } }
+  ],
+  "steps": [
+    {
+      "title": "See the chain",
+      "why": "Each commit records its parent's sha. `--format='%h parent=%p'` makes the links visible — this is the chain that makes tampering detectable.",
+      "commands": ["git log --format='%h parent=%p %s'", "git cat-file -p HEAD~2"],
+      "expect": "Every commit naming its parent, back to the root."
+    },
+    {
+      "title": "Try to change an old commit in place",
+      "why": "Build a new tree with an altered ledger and a new commit object with the SAME parent as the original. It succeeds — and produces a different sha, because the content differs. There is no way to make it produce the original sha.",
+      "actions": [
+        { "write": { "path": "tampered.txt", "content": "opening balance: 1000\npayment out: 25\n" } },
+        { "run": "sh -c 'git update-index --add --cacheinfo 100644,$(git hash-object -w tampered.txt),ledger.txt'" },
+        { "run": "sh -c 'git commit-tree $(git write-tree) -p $(git rev-parse HEAD~3) -m \"Record payment of 250\" > .git/forged-sha'" },
+        { "run": "sh -c 'git reset -q --hard HEAD'" }
+      ],
+      "commands": ["sh -c 'echo original: $(git rev-parse HEAD~2)'", "sh -c 'echo forged:   $(cat .git/forged-sha)'", "sh -c 'git cat-file -p $(cat .git/forged-sha) | head -3'"],
+      "expect": "Two different shas for two different contents — as designed.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(git rev-parse HEAD~2)\" != \"$(cat .git/forged-sha)\" && echo different'",
+          "contains": "different",
+          "label": "the altered commit gets a different sha, always" }
+      ]
+    },
+    {
+      "title": "Splice the forgery in and see what breaks",
+      "why": "Point a branch at the forged commit. It is a valid commit — but the two commits that came after the original still name the ORIGINAL sha as their parent, so they cannot be reached from here. The tamper cannot be hidden inside the existing chain.",
+      "actions": [
+        { "run": "sh -c 'git branch forged $(cat .git/forged-sha)'" }
+      ],
+      "commands": ["git log --oneline forged", "git log --oneline main", "git log --oneline --graph --all --decorate"],
+      "expect": "Two separate histories — the forgery is a fork, not a substitution.",
+      "verify": [
+        { "cmd": "git log --oneline forged", "lines": 2,
+          "label": "the forged chain stops where the real one continues" },
+        { "cmd": "git log --oneline main", "lines": 4,
+          "label": "main's history is unaffected" }
+      ]
+    },
+    {
+      "title": "Confirm the descendants still point at the original",
+      "why": "Read the parent sha recorded in the commit after the tampered one. It names the original — and always will, because that sha is baked into its own hash.",
+      "commands": ["sh -c 'echo child parent: $(git log -1 --format=%P HEAD~1)'", "sh -c 'echo original:     $(git rev-parse HEAD~2)'", "sh -c 'echo forged:       $(cat .git/forged-sha)'"],
+      "expect": "The child names the original commit, not the forgery."
+    },
+    {
+      "title": "The only way to change an old commit",
+      "why": "Rewrite everything after it too. That is exactly what rebase and filter-branch do — and every downstream sha changes, which is why anyone else's clone notices immediately.",
+      "actions": [
+        { "run": "sh -c 'git rev-parse main > .git/original-main-sha'" },
+        { "run": "sh -c 'git branch rewritten main'" },
+        { "run": "git switch -q rewritten" },
+        { "run": "git rebase -q --exec \"git commit --amend --no-edit --author='Auditor <auditor@shakha.local>'\" --root",
+          "env": { "GIT_EDITOR": "true" } }
+      ],
+      "commands": ["git log --format='%h %an %s' rewritten", "git log --format='%h %an %s' main", "sh -c 'git rev-list rewritten | head -2'"],
+      "expect": "Identical messages and identical trees — and every single sha in the chain is different, because the author field changed in the first commit and that ripples all the way up."
+    },
+    {
+      "title": "Corrupt an object and let fsck catch it",
+      "why": "The filename of an object IS the hash of its content, so any change makes the two disagree. `fsck` recomputes and reports — which is why silent corruption, from disk or from malice, is not a thing git tolerates.",
+      "actions": [
+        { "run": "git switch -q main" },
+        { "run": "sh -c 'sha=$(git rev-parse HEAD~2); f=.git/objects/${sha%${sha#??}}/${sha#??}; chmod u+w \"$f\" 2>/dev/null; printf \"tampered\" > \"$f\"; echo damaged'" }
+      ],
+      "commands": ["sh -c 'git fsck --full 2>&1 | head -4'", "sh -c 'git cat-file -p HEAD~2 2>&1 | head -2'"],
+      "expect": "An error naming the exact object whose content no longer matches its name.",
+      "verify": [
+        { "cmd": "sh -c 'git fsck --full 2>&1 | grep -ci \"error\\|corrupt\\|invalid\"'", "not_empty": true,
+          "allow_failure": true,
+          "label": "fsck detected content that does not match its hash" }
+      ]
+    },
+    {
+      "title": "What signing adds on top",
+      "why": "Hashing proves the history is internally consistent; it does not prove who wrote it — anyone can forge a chain from scratch. A GPG or SSH signature on the commit or tag is what binds it to a person, and `%G?` reports the verification status.",
+      "commands": ["git log --format='%h %G? %s' rewritten -3", "sh -c 'git config --get user.signingkey || echo \"no signing key configured\"'"],
+      "expect": "%G? shows N — no signature — for every commit here."
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'test \"$(git rev-parse main~2)\" != \"$(cat .git/forged-sha)\" && echo different'",
+      "contains": "different",
+      "label": "altered content can never reproduce the original sha" },
+    { "cmd": "git log --oneline forged", "lines": 2,
+      "label": "a forged commit forks history rather than replacing it",
+      "hint": "descendants record their parent's sha in their own hash" },
+    { "cmd": "sh -c 'test \"$(git rev-parse rewritten)\" != \"$(cat .git/original-main-sha)\" && echo rewritten'",
+      "contains": "rewritten",
+      "label": "rewriting an old commit changed every sha after it",
+      "hint": "compare against the tip recorded before the rewrite — main's objects are deliberately damaged by the last step" },
+    { "cmd": "sh -c 'git fsck --full 2>&1 | grep -ci \"error\\|corrupt\\|invalid\"'", "not_empty": true,
+      "allow_failure": true,
+      "label": "fsck detects an object whose content was altered" }
+  ],
+  "pitfalls": [
+    "Hash chaining proves consistency, not authorship. Signing commits or tags is what proves who made them.",
+    "sha-1 is weakened against collision attacks; git uses a hardened variant that detects the known attack, and sha-256 repositories exist. For accidental corruption either is more than adequate.",
+    "Every rewrite tool changes downstream shas. If a tool claims to edit an old commit without changing later shas, it is lying or it is not git.",
+    "A tampered object in a packfile shows up as a pack error rather than a loose-object error, but fsck catches both."
+  ],
+  "cheatsheet": [
+    ["git log --format='%h parent=%p'", "see the chain of parents"],
+    ["git cat-file -p <commit>", "the raw commit, with its tree and parent"],
+    ["git fsck --full", "recompute every hash and report mismatches"],
+    ["git log --format='%h %G?'", "signature verification status per commit"],
+    ["git commit -S / git tag -s", "sign, to bind history to a person"],
+    ["git rebase --root", "the only way to alter an old commit: rewrite everything after it"]
+  ]
+}

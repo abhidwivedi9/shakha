@@ -1,0 +1,113 @@
+{
+  "id": "internals-packfiles",
+  "title": "Why 200 versions of a file take almost no space",
+  "category": "internals",
+  "level": "expert",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "Git stores whole snapshots, yet a repository with a thousand versions of a file is tiny. Packfiles and delta compression are the reason — open one and read the deltas.",
+  "concepts": ["loose vs packed", "delta compression", "verify-pack", "pack index", "repack", "delta chains"],
+  "mental_model": "The data model is snapshots; the storage is deltas. When git packs, it finds objects that resemble each other and stores most of them as a small diff against a chosen base. Nothing about the model changes — only the bytes on disk.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v0')\n" } },
+    { "commit": { "message": "Initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Create many versions of one large-ish file",
+      "why": "Forty commits, each changing one line of a 400-line file. Stored naively that is forty near-identical copies — a good demonstration of what packing is for.",
+      "actions": [
+        { "run": "sh -c 'for i in $(seq 1 40); do { echo \"# generated file, revision $i\"; for j in $(seq 1 400); do echo \"CONSTANT_$j = $j\"; done; } > config.py; git add config.py; git commit -q -m \"Regenerate config, revision $i\"; done'" }
+      ],
+      "commands": ["sh -c 'wc -l config.py'", "git log --oneline | head -3", "git count-objects -vH"],
+      "expect": "Around 120 loose objects and a size-on-disk of a few hundred kilobytes.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 41, "label": "forty-one commits exist" }
+      ]
+    },
+    {
+      "title": "Measure the naive cost",
+      "why": "Loose objects are zlib-compressed individually, with no knowledge of each other. Forty near-identical files compress to forty similar blobs — no sharing at all.",
+      "commands": ["git count-objects -vH", "sh -c 'find .git/objects -type f | wc -l'", "sh -c 'du -sh .git/objects 2>/dev/null | head -1'"],
+      "expect": "One object file per blob, tree and commit."
+    },
+    {
+      "title": "Pack them",
+      "why": "`repack -ad` builds a single optimal packfile. Git compares objects, picks bases, and stores the rest as deltas — the size drop is often an order of magnitude.",
+      "commands": ["git repack -a -d --quiet", "git count-objects -vH", "sh -c 'find .git/objects/pack -type f'", "sh -c 'find .git/objects -type f | grep -v pack | wc -l'"],
+      "expect": "Loose count near zero, one .pack and one .idx file, size-pack far smaller than before.",
+      "verify": [
+        { "cmd": "sh -c 'find .git/objects/pack -name \"*.pack\" | wc -l'", "not_empty": true,
+          "label": "a packfile was created", "hint": "git repack -a -d" },
+        { "cmd": "sh -c 'find .git/objects -type f | grep -v pack | wc -l'", "equals": "0",
+          "label": "no loose objects remain" }
+      ]
+    },
+    {
+      "title": "Read inside the packfile",
+      "why": "`verify-pack -v` lists every object with its type, size, packed size and delta depth. Objects with a base sha at the end of the line are stored as deltas against that object.",
+      "commands": ["sh -c 'git verify-pack -v .git/objects/pack/*.idx | head -12'", "sh -c 'git verify-pack -v .git/objects/pack/*.idx | grep -c \" blob \"'"],
+      "expect": "Blobs listed with sizes and chain depths."
+    },
+    {
+      "title": "See the delta chains",
+      "why": "Most of those forty config blobs are stored as small deltas against one full copy. The fifth column is the packed size — compare it with the object's real size in the third.",
+      "commands": ["sh -c 'git verify-pack -v .git/objects/pack/*.idx | awk \"NF>=7 && \\$2==\\\"blob\\\" {print \\$3, \\$4, \\$5, \\$6}\" | sort -k1 -rn | head -5'", "sh -c 'git verify-pack -v .git/objects/pack/*.idx | awk \"NF>=7\" | wc -l'"],
+      "expect": "A handful of full-size objects, and many stored in a fraction of their real size."
+    },
+    {
+      "title": "Prove nothing was lost",
+      "why": "The data model is unchanged: every blob still reads back byte for byte. Delta storage is invisible above the object layer, which is why nothing else in git has to know about it.",
+      "commands": ["sh -c 'git show HEAD~20:config.py | head -3'", "sh -c 'git show HEAD~20:config.py | wc -l'", "git fsck --full", "sh -c 'git cat-file -s $(git rev-parse HEAD~20:config.py)'"],
+      "expect": "The full 401-line file, reconstructed from a delta chain on demand.",
+      "verify": [
+        { "cmd": "sh -c 'git show HEAD~20:config.py | wc -l'", "equals": "401",
+          "label": "an old version reads back complete from the pack" },
+        { "cmd": "git fsck --full", "empty": true, "label": "the packfile is consistent" }
+      ]
+    },
+    {
+      "title": "The index file beside the pack",
+      "why": "A `.pack` holds the objects; the `.idx` maps each sha to an offset within it. Without the index, finding one object would mean scanning the whole pack — with it, lookup is a binary search.",
+      "commands": ["sh -c 'ls -la .git/objects/pack'", "sh -c 'git verify-pack -s .git/objects/pack/*.idx 2>/dev/null || git verify-pack -v .git/objects/pack/*.idx | tail -3'"],
+      "expect": "A pack and an idx of very different sizes."
+    },
+    {
+      "title": "What controls the trade-off",
+      "why": "`pack.depth` caps how long a delta chain may be — longer chains are smaller on disk but slower to read. `pack.window` controls how many candidate bases git considers. Both are worth knowing exist and rarely worth changing.",
+      "commands": ["sh -c 'git config pack.depth 50 && git config pack.window 250 && git config --get-regexp pack | cat'", "git repack -a -d --quiet", "git count-objects -vH"],
+      "verify": [
+        { "cmd": "git config --get pack.depth", "equals": "50",
+          "label": "the delta chain depth is configured" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'find .git/objects/pack -name \"*.pack\" | wc -l'", "not_empty": true,
+      "label": "the repository's objects live in a packfile",
+      "hint": "git repack -a -d" },
+    { "cmd": "sh -c 'find .git/objects -type f | grep -v pack | wc -l'", "equals": "0",
+      "label": "no loose objects are left" },
+    { "cmd": "sh -c 'git show HEAD~20:config.py | wc -l'", "equals": "401",
+      "label": "old versions still read back in full from delta chains" },
+    { "cmd": "git fsck --full", "empty": true,
+      "label": "the pack verifies cleanly" },
+    { "cmd": "git log --oneline", "lines": 41,
+      "label": "all forty-one commits are intact" }
+  ],
+  "pitfalls": [
+    "Packing is storage, not the data model. Git still conceptually stores snapshots; anyone who tells you git stores diffs is describing the pack format.",
+    "A repository full of large binaries packs badly — binaries rarely delta well against each other. That is the case where LFS earns its keep.",
+    "`git gc --aggressive` recomputes deltas from scratch. It is slow, occasionally worth it after importing a repository, and pointless as a routine.",
+    "Never delete a `.pack` without its `.idx`, or the other way round. They are a pair."
+  ],
+  "cheatsheet": [
+    ["git count-objects -vH", "loose objects, packs and their sizes"],
+    ["git repack -a -d", "rebuild one optimal packfile"],
+    ["git verify-pack -v <idx>", "every object in the pack, with delta depth"],
+    ["git gc", "the routine version of the same work"],
+    ["git config pack.depth / pack.window", "the size-versus-speed trade-off"],
+    ["git cat-file -s <sha>", "an object's real size, whatever it costs on disk"]
+  ]
+}

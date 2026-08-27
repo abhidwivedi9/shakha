@@ -1,0 +1,124 @@
+{
+  "id": "internals-object-anatomy",
+  "title": "The four object types, opened up",
+  "category": "internals",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "Blob, tree, commit and tag are the entire data model. Read each one in its raw form, compute a sha by hand, and see why identical content is stored exactly once.",
+  "concepts": ["blob/tree/commit/tag", "cat-file -p and -t", "sha of type+size+content", "deduplication", "rev-parse ^{tree}"],
+  "mental_model": "Git stores four kinds of object, each named by the sha-1 of its type, length and content. A commit points to a tree, a tree points to blobs and other trees, and a tag points to any of them. That is the entire database.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Aquarium\n" } },
+    { "write": { "path": "src/pump.py", "content": "RPM = 1600\n" } },
+    { "write": { "path": "src/dosing.py", "content": "RPM = 1600\n" } },
+    { "write": { "path": "docs/guide.md", "content": "# Guide\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add the project\"" },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" }
+  ],
+  "steps": [
+    {
+      "title": "Count what one commit created",
+      "why": "Four files, but not four objects — plus trees for each directory and one commit. `cat-file --batch-all-objects` lists everything in the database with its type.",
+      "commands": ["sh -c 'git cat-file --batch-all-objects --batch-check=\"%(objecttype) %(objectname) %(objectsize)\"'", "git count-objects -v"],
+      "expect": "Blobs, trees, a commit and a tag — and fewer blobs than you might expect."
+    },
+    {
+      "title": "Two identical files, one blob",
+      "why": "pump.py and dosing.py have identical content, so they hash to the same sha and are stored once. Git deduplicates by content automatically — this is why moving a file costs nothing.",
+      "commands": ["git hash-object src/pump.py", "git hash-object src/dosing.py", "git ls-files -s src"],
+      "expect": "The same sha twice, in two index rows with different paths.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(git hash-object src/pump.py)\" = \"$(git hash-object src/dosing.py)\" && echo identical'",
+          "contains": "identical",
+          "label": "identical content shares one blob" }
+      ]
+    },
+    {
+      "title": "Read a blob",
+      "why": "A blob is content and nothing else — no filename, no permissions, no timestamp. Everything about where it lives is recorded in the tree that references it.",
+      "commands": ["sh -c 'git cat-file -t $(git hash-object README.md)'", "sh -c 'git cat-file -s $(git hash-object README.md)'", "sh -c 'git cat-file -p $(git hash-object README.md)'"],
+      "expect": "blob, its size in bytes, then the file content."
+    },
+    {
+      "title": "Read the tree",
+      "why": "A tree is a directory listing: mode, type, sha, name. Note `src` is a tree of its own — directories nest, and this recursion is the whole structure.",
+      "commands": ["sh -c 'git cat-file -p HEAD^{tree}'", "sh -c 'git cat-file -p HEAD^{tree}:src' ", "git ls-tree -r HEAD"],
+      "expect": "The root tree with two subtrees, and src listing both python files pointing at the SAME blob sha.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -p HEAD^{tree} | grep -c tree'", "not_empty": true,
+          "label": "the root tree contains subtrees" }
+      ]
+    },
+    {
+      "title": "Read the commit",
+      "why": "A commit is a short text object: the tree it snapshots, its parents, author, committer, and the message. Nothing else. The 'diff' you see in `git show` is computed on demand, never stored.",
+      "commands": ["git cat-file -p HEAD", "git cat-file -t HEAD", "git rev-parse HEAD^{tree}"],
+      "expect": "tree, author, committer and message lines — and no parent, since this is the first commit."
+    },
+    {
+      "title": "Read the tag object",
+      "why": "An annotated tag is the fourth type: it points at an object, names its type, and carries a tagger and a message. A lightweight tag has no object at all — it is just a ref file.",
+      "commands": ["git cat-file -t v1.0", "git cat-file -p v1.0", "git rev-parse v1.0", "git rev-parse v1.0^{}"],
+      "expect": "The tag object's sha differs from the commit's; `^{}` dereferences to the commit.",
+      "verify": [
+        { "cmd": "git cat-file -t v1.0", "equals": "tag", "label": "the annotated tag is its own object" },
+        { "cmd": "sh -c 'test \"$(git rev-parse v1.0)\" != \"$(git rev-parse v1.0^{})\" && echo different'",
+          "contains": "different",
+          "label": "the tag object and the commit it points at have different shas" }
+      ]
+    },
+    {
+      "title": "Compute a sha yourself",
+      "why": "The hash covers the type, a space, the length, a NUL byte, then the content. Reproducing it with a shell one-liner proves there is no hidden metadata — the name really is a function of the content.",
+      "commands": ["sh -c 'printf \"blob %d\\000\" $(wc -c < README.md) | cat - README.md | sha1sum'", "git hash-object README.md"],
+      "expect": "The same forty characters from both."
+    },
+    {
+      "title": "Watch a change ripple upwards",
+      "why": "Editing one file changes its blob, which changes its tree, which changes the root tree, which changes the commit. Every sha on the path to the root is different — that chain is what makes history tamper-evident.",
+      "actions": [
+        { "write": { "path": "src/pump.py", "content": "RPM = 1800\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Raise pump speed\"" }
+      ],
+      "commands": ["sh -c 'echo old root: $(git rev-parse HEAD~1^{tree})'", "sh -c 'echo new root: $(git rev-parse HEAD^{tree})'", "sh -c 'git cat-file -p HEAD^{tree}'", "sh -c 'echo docs subtree unchanged: $(git rev-parse HEAD~1^{tree}:docs) $(git rev-parse HEAD^{tree}:docs)'"],
+      "expect": "New root tree and new src tree — but the docs subtree keeps its original sha, because nothing in it changed.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(git rev-parse HEAD~1^{tree}:docs)\" = \"$(git rev-parse HEAD^{tree}:docs)\" && echo shared'",
+          "contains": "shared",
+          "label": "unchanged directories are reused, not copied",
+          "hint": "that is why a commit is cheap even in a huge repository" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git cat-file -t v1.0", "equals": "tag",
+      "label": "you identified all four object types" },
+    { "cmd": "sh -c 'test \"$(git rev-parse HEAD~1^{tree}:docs)\" = \"$(git rev-parse HEAD^{tree}:docs)\" && echo shared'",
+      "contains": "shared",
+      "label": "unchanged subtrees are shared between commits" },
+    { "cmd": "sh -c 'test \"$(git rev-parse HEAD~1^{tree})\" != \"$(git rev-parse HEAD^{tree})\" && echo changed'",
+      "contains": "changed",
+      "label": "…while the path from the change to the root is all new objects" },
+    { "cmd": "git log --oneline", "lines": 2, "label": "two commits, both readable as raw objects" },
+    { "cmd": "git fsck --full", "empty": true, "label": "the object database is consistent" }
+  ],
+  "pitfalls": [
+    "Blobs have no filename. A file 'moved' between commits is the same blob referenced from a different tree — which is why rename detection is a diff-time heuristic.",
+    "`HEAD^{tree}` dereferences a commit to its tree; `v1.0^{}` dereferences a tag to its commit. The braces matter, and some shells need them quoted.",
+    "Git stores whole snapshots, not diffs. Delta compression happens later, inside packfiles, and is an optimisation rather than the data model.",
+    "Modern git can use sha-256 instead of sha-1, but the structure is identical — only the hash function changes."
+  ],
+  "cheatsheet": [
+    ["git cat-file -t <sha>", "object type"],
+    ["git cat-file -s <sha>", "object size"],
+    ["git cat-file -p <sha>", "pretty-printed contents"],
+    ["git cat-file --batch-all-objects --batch-check", "every object in the database"],
+    ["git rev-parse HEAD^{tree}", "a commit's tree"],
+    ["git rev-parse <tag>^{}", "the commit a tag points at"],
+    ["git ls-tree -r HEAD", "the full tree, flattened"]
+  ]
+}

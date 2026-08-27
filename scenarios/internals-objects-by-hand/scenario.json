@@ -1,0 +1,129 @@
+{
+  "id": "internals-objects-by-hand",
+  "title": "Make a commit without using git commit",
+  "category": "internals",
+  "level": "expert",
+  "order": 1,
+  "duration_min": 16,
+  "summary": "Build a commit from the bottom up with plumbing commands: hash a blob, write a tree, create a commit object, move a branch. After this, nothing about git is mysterious.",
+  "concepts": ["hash-object", "update-index", "write-tree", "commit-tree", "update-ref", "plumbing vs porcelain"],
+  "mental_model": "`git commit` is four plumbing commands in a trench coat: store the file as a blob, build a tree from the index, create a commit pointing at that tree and at the current HEAD, then move the branch to the new commit.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Built by hand\n" } },
+    { "run": "git add README.md" },
+    { "run": "git commit -q -m \"Initial commit, the normal way\"" }
+  ],
+  "steps": [
+    {
+      "title": "Store a file as a blob",
+      "why": "`hash-object -w` computes the sha of the content and writes it into `.git/objects`. Note what it does NOT do: nothing is staged, nothing is committed, and the filename is not recorded anywhere. A blob is only bytes.",
+      "actions": [
+        { "write": { "path": "pump.py", "content": "RPM = 1600\n" } }
+      ],
+      "commands": ["git hash-object -w pump.py", "sh -c 'sha=$(git hash-object pump.py); ls .git/objects/${sha%${sha#??}}'", "git status --short", "git cat-file -t $(git hash-object pump.py)"],
+      "expect": "A 40-character sha, an object file on disk, and status still showing pump.py as untracked.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -t $(git hash-object pump.py)'", "equals": "blob",
+          "label": "the content is stored as a blob",
+          "hint": "git hash-object -w pump.py" }
+      ]
+    },
+    {
+      "title": "Put the blob into the index under a name",
+      "why": "`update-index --add --cacheinfo` writes an index row: mode, blob sha, path. This is where a filename first enters the picture — blobs themselves have no names.",
+      "commands": ["sh -c 'git update-index --add --cacheinfo 100644,$(git hash-object pump.py),pump.py'", "git ls-files -s", "git status --short"],
+      "expect": "pump.py now staged, with the blob sha you just created.",
+      "verify": [
+        { "cmd": "git ls-files", "contains": "pump.py", "label": "the path is in the index" }
+      ]
+    },
+    {
+      "title": "Turn the index into a tree",
+      "why": "`write-tree` snapshots the index as a tree object — a sorted list of (mode, type, sha, name). This is the object a commit actually points at.",
+      "commands": ["git write-tree", "sh -c 'git cat-file -t $(git write-tree)'", "sh -c 'git cat-file -p $(git write-tree)'"],
+      "expect": "A tree containing README.md and pump.py, each with its own blob sha.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -p $(git write-tree) | grep -c pump.py'", "equals": "1",
+          "label": "the tree lists the new file" }
+      ]
+    },
+    {
+      "title": "Create the commit object",
+      "why": "`commit-tree` takes a tree, a parent and a message, and returns a new commit sha. Nothing has moved yet — the commit exists but no branch points at it, so `git log` cannot see it.",
+      "actions": [
+        { "run": "sh -c 'git commit-tree $(git write-tree) -p HEAD -m \"Add pump control, built by hand\" > .git/handmade-sha'" }
+      ],
+      "commands": ["sh -c 'cat .git/handmade-sha'", "sh -c 'git cat-file -t $(cat .git/handmade-sha)'", "sh -c 'git cat-file -p $(cat .git/handmade-sha)'", "git log --oneline"],
+      "expect": "A commit object with tree, parent, author and message lines — and a git log that still shows only one commit.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -t $(cat .git/handmade-sha)'", "equals": "commit",
+          "label": "a commit object exists",
+          "hint": "git commit-tree <tree> -p HEAD -m \"...\"" },
+        { "cmd": "git log --oneline", "lines": 1,
+          "label": "…but nothing points at it yet, so log cannot see it" }
+      ]
+    },
+    {
+      "title": "Move the branch",
+      "why": "`update-ref` writes the sha into `refs/heads/main`. That single write is what 'making a commit' means from the branch's point of view — everything before it was creating objects.",
+      "commands": ["sh -c 'git update-ref refs/heads/main $(cat .git/handmade-sha)'", "git log --oneline", "git status --short", "cat .git/refs/heads/main"],
+      "expect": "Two commits in the log, a clean status, and a ref file containing the sha.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2,
+          "label": "the branch moved and the commit is now history",
+          "hint": "git update-ref refs/heads/main <sha>" },
+        { "cmd": "git log --pretty=%s -1", "equals": "Add pump control, built by hand",
+          "label": "…with the message you gave commit-tree" }
+      ]
+    },
+    {
+      "title": "Prove it is a completely ordinary commit",
+      "why": "Every porcelain command treats it identically, because there is no difference. `git commit` is a convenience wrapper, not a special mechanism.",
+      "commands": ["git show --stat HEAD", "git log --graph --oneline", "git diff HEAD~1 HEAD", "git status"],
+      "expect": "Nothing unusual anywhere."
+    },
+    {
+      "title": "The same four steps, the normal way",
+      "why": "Run the porcelain and compare. `add` = hash-object plus update-index. `commit` = write-tree plus commit-tree plus update-ref. That mapping is the whole of git's data layer.",
+      "actions": [
+        { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+        { "run": "git add dosing.py" },
+        { "run": "git commit -q -m \"Add dosing, the normal way\"" },
+        { "run": "sh -c 'rm -f .git/handmade-sha'" }
+      ],
+      "commands": ["git log --oneline", "sh -c 'git cat-file -p HEAD'", "sh -c 'git cat-file -p HEAD^{tree}'"],
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 3,
+          "label": "three commits: one normal, one by hand, one normal again" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "you built a commit with plumbing and git treats it as ordinary history",
+      "hint": "hash-object, update-index, write-tree, commit-tree, update-ref" },
+    { "cmd": "git log --pretty=%s", "contains": "Add pump control, built by hand",
+      "label": "the hand-built commit is in the log" },
+    { "cmd": "sh -c 'git cat-file -p HEAD~1 | head -1 | cut -d\" \" -f1'", "equals": "tree",
+      "label": "the hand-built commit points at a tree, like any other" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" },
+    { "cmd": "git fsck --full", "empty": true,
+      "label": "fsck considers everything you built perfectly valid" }
+  ],
+  "pitfalls": [
+    "`hash-object` without `-w` only prints the sha; it writes nothing. Easy to think you stored something when you did not.",
+    "`commit-tree` does not move any branch. A commit with no ref pointing at it is invisible to `git log` and will be garbage-collected.",
+    "The index must be correct before `write-tree`. Plumbing does not check whether the tree makes sense.",
+    "Porcelain output is for humans and may change between versions; plumbing output is stable and meant for scripts. That is the actual distinction between the two."
+  ],
+  "cheatsheet": [
+    ["git hash-object -w <file>", "store content as a blob"],
+    ["git update-index --add --cacheinfo <mode>,<sha>,<path>", "put it in the index"],
+    ["git write-tree", "snapshot the index as a tree"],
+    ["git commit-tree <tree> -p <parent> -m \"...\"", "create a commit object"],
+    ["git update-ref refs/heads/<branch> <sha>", "move the branch"],
+    ["git cat-file -t / -p <sha>", "type / contents of any object"],
+    ["git rev-parse HEAD^{tree}", "the tree a commit points at"]
+  ]
+}
