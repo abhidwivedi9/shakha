@@ -1,0 +1,143 @@
+{
+  "id": "history-reading-the-graph",
+  "title": "Read a commit graph without guessing",
+  "category": "history",
+  "level": "beginner",
+  "order": 11,
+  "duration_min": 12,
+  "summary": "Those ASCII lines are not decoration. Build a history with a fork, a merge and a divergence, then learn to read the shape — and the three flags that make a hairball legible.",
+  "concepts": ["--graph", "--all --decorate", "merge bubbles", "--first-parent", "topo vs date order", "diverged branches"],
+  "mental_model": "Time runs upwards. A line that splits is a branch point, a line that joins is a merge, and a commit with two lines entering it is a merge commit. Everything else is one commit following another.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Second commit" } },
+    { "run": "git switch -q -c feature/alpha" },
+    { "write": { "path": "alpha.py", "content": "ALPHA = 1\n" } },
+    { "commit": { "message": "Alpha one" } },
+    { "write": { "path": "alpha.py", "content": "ALPHA = 2\n" } },
+    { "commit": { "message": "Alpha two" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "main-work.py", "content": "MAIN = 1\n" } },
+    { "commit": { "message": "Work on main while alpha ran" } },
+    { "run": "git merge -q --no-ff -m \"Merge feature/alpha\" feature/alpha" },
+    { "run": "git switch -q -c feature/beta" },
+    { "write": { "path": "beta.py", "content": "BETA = 1\n" } },
+    { "commit": { "message": "Beta one" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Third commit on main" } }
+  ],
+  "steps": [
+    {
+      "title": "The default log hides the shape entirely",
+      "why": "A flat list gives no hint that two branches existed or that anything was merged. Every question about how history fits together needs `--graph`.",
+      "commands": ["git log --oneline", "sh -c 'git log --oneline | wc -l'"],
+      "expect": "A straight list, with the merge indistinguishable from an ordinary commit."
+    },
+    {
+      "title": "Add the graph and the labels",
+      "why": "`--graph --all --decorate` is the combination worth memorising: the shape, every branch (not just yours), and the names attached to each commit. Anything less and you are looking at part of the picture.",
+      "commands": ["git log --oneline --graph --all --decorate"],
+      "expect": "A fork, a merge bubble, and a second branch hanging off the merge — all labelled.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline --graph --all | grep -c \"|\"'", "not_empty": true,
+          "label": "the graph shows structure, not just a list" }
+      ]
+    },
+    {
+      "title": "Identify the merge commit",
+      "why": "A merge is the commit where two lines converge, and it is the only kind with two parents. `--merges` lists them; `%p` proves it by printing both parent shas.",
+      "commands": ["git log --oneline --merges", "sh -c 'git log --merges -1 --format=\"%h has parents: %p\"'", "sh -c 'git rev-list --parents -n 1 $(git log --merges -1 --format=%H)'"],
+      "expect": "One merge commit with two parents.",
+      "verify": [
+        { "cmd": "sh -c 'git log --merges -1 --format=%p | wc -w'", "equals": "2",
+          "label": "the merge commit has exactly two parents" }
+      ]
+    },
+    {
+      "title": "Follow only the main line",
+      "why": "`--first-parent` treats each merge as a single event and never enters the merged branch. On a repository with hundreds of merges this is the difference between a readable release history and a wall of noise.",
+      "commands": ["git log --oneline --graph --first-parent", "sh -c 'git log --oneline --first-parent | wc -l'", "sh -c 'git log --oneline | wc -l'"],
+      "expect": "Five commits on the main line versus seven in total — the two alpha commits are skipped.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline --first-parent | wc -l'", "equals": "5",
+          "label": "first-parent history is shorter than the full history",
+          "hint": "each merge counts once and its branch is skipped" },
+        { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "7",
+          "label": "…while the full history includes the merged branch's commits" }
+      ]
+    },
+    {
+      "title": "See a divergence",
+      "why": "feature/beta forked before main's last commit, so neither contains the other. `--left-right` marks which side each commit is on — the clearest way to answer 'what is on my branch that is not on main'.",
+      "commands": ["git log --oneline --graph --all --decorate", "git log --oneline --left-right --graph main...feature/beta", "sh -c 'git rev-list --left-right --count main...feature/beta'"],
+      "expect": "One commit on each side — the definition of diverged.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --left-right --count main...feature/beta'", "matches": "^1\\s+1",
+          "label": "the two branches have one unique commit each" }
+      ]
+    },
+    {
+      "title": "Ordering changes what you see",
+      "why": "`--date-order` interleaves branches by time; `--topo-order` keeps each branch's commits together. When a graph looks tangled, topo order is usually the fix — the history did not change, only its presentation.",
+      "commands": ["git log --oneline --graph --all --date-order", "git log --oneline --graph --all --topo-order"],
+      "expect": "The same commits, grouped differently."
+    },
+    {
+      "title": "Ask the questions the graph is really for",
+      "why": "Once you can see the shape, the useful queries are one command each: what is in this branch and not that one, where did they diverge, and which branches contain a given commit.",
+      "commands": ["git log --oneline main..feature/beta", "git merge-base main feature/beta", "sh -c 'git log --oneline -1 $(git merge-base main feature/beta)'", "sh -c 'git branch --contains $(git log --merges -1 --format=%H)'"],
+      "expect": "The unique commit, the fork point, and which branches hold the merge.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline $(git merge-base main feature/beta)..feature/beta | wc -l'",
+          "equals": "1",
+          "label": "you can name exactly what a branch added since it forked" }
+      ]
+    },
+    {
+      "title": "Save the view you will use",
+      "why": "Nobody types the full incantation twice. Alias it, and reading history becomes a reflex rather than a chore.",
+      "commands": ["git config --global alias.graph \"log --oneline --graph --all --decorate\"", "git config --global alias.line \"log --oneline --graph --first-parent\"", "git graph", "git line"],
+      "verify": [
+        { "cmd": "git config --global --get alias.graph", "contains": "--graph",
+          "label": "the graph view is aliased",
+          "hint": "git config --global alias.graph \"log --oneline --graph --all --decorate\"" },
+        { "cmd": "git config --global --get alias.line", "contains": "--first-parent",
+          "label": "…and so is the main-line view" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git log --oneline --first-parent | wc -l'", "equals": "5",
+      "label": "you can read the main line separately from the full history",
+      "hint": "git log --graph --first-parent" },
+    { "cmd": "sh -c 'git log --merges -1 --format=%p | wc -w'", "equals": "2",
+      "label": "you can identify a merge commit by its two parents" },
+    { "cmd": "sh -c 'git rev-list --left-right --count main...feature/beta'", "matches": "^1\\s+1",
+      "label": "you can measure a divergence in both directions" },
+    { "cmd": "git config --global --get alias.graph", "contains": "--decorate",
+      "label": "the graph view is saved as an alias" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "nothing was modified — reading history never changes it" }
+  ],
+  "pitfalls": [
+    "`--graph` without `--all` shows only the current branch's ancestry, so a branch you are looking for is simply absent rather than wrong.",
+    "Time runs upwards in git's output and downwards in most graphical tools. Check which way round you are reading before concluding anything.",
+    "A merge bubble means a merge commit exists. A fast-forwarded branch leaves no bubble at all, which is why some teams insist on `--no-ff`.",
+    "`--graph` forces topological ordering internally, so combining it with `--date-order` can still look non-chronological. That is correct, not a bug.",
+    "On a repository with hundreds of branches, `--all` is unreadable. Name the two or three branches you care about instead."
+  ],
+  "cheatsheet": [
+    ["git log --oneline --graph --all --decorate", "the everyday view: shape, all branches, labels"],
+    ["git log --graph --first-parent", "the main line, merges as single events"],
+    ["git log --merges", "just the merge commits"],
+    ["git log -1 --format=%p <merge>", "prove a commit is a merge"],
+    ["git log --left-right --graph A...B", "which side each commit is on"],
+    ["git merge-base A B", "where two branches forked"],
+    ["git rev-list --left-right --count A...B", "the divergence as two numbers"],
+    ["--topo-order / --date-order", "group by branch / interleave by time"]
+  ]
+}

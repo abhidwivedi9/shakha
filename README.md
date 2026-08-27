@@ -7,7 +7,7 @@ Every scenario builds an actual repository on disk. The step buttons run actual
 actual files, and the checks grade the repo state — not which buttons you pressed.
 There is no simulation layer anywhere in this project.
 
-**125 scenarios across all 20 categories. All 125 pass their own checks.**
+**127 scenarios across all 20 categories. All 127 pass their own checks.**
 
 ```
 python shakhactl.py dashboard          # http://127.0.0.1:4100
@@ -86,9 +86,9 @@ against a real forge, because there is no difference.
 | # | Category | Scenarios | Covers |
 |---:|---|---:|---|
 | 1 | Setup & config | 7 | init, clone anatomy, config precedence, gitignore, CRLF, aliases, conditional identity |
-| 2 | Snapshots: add, commit, diff | 7 | the three diffs, amend, restore, rm/mv, clean, the `-a` trap, file recovery |
+| 2 | Snapshots: add, commit, diff | 8 | the three diffs, amend, restore, rm/mv, clean, the `-a` trap, file recovery |
 | 3 | The index, in depth | 6 | stage-then-edit, hunk staging, four ways to unstage, `-N`, the index file itself |
-| 4 | History & inspection | 10 | log formats, pickaxe, blame, ranges, shortlog, file lifecycle, trailers, notes |
+| 4 | History & inspection | 11 | log formats, pickaxe, blame, ranges, shortlog, file lifecycle, trailers, notes |
 | 5 | Branching | 7 | ff vs no-ff, detached HEAD, rename/recover, `--contains`, hotfix branches, orphan branches |
 | 6 | Merging & conflicts | 6 | conflicts, abort and `-X`/`-s`, modify/delete, rerere, squash vs merge, custom drivers |
 | 7 | Rebase | 6 | interactive cleanup, `--onto`, conflict recovery, autosquash, splitting, stacks |
@@ -106,8 +106,8 @@ against a real forge, because there is no difference.
 | 19 | Real-world incidents | 6 | merge ate my code, oversized push, force push over main, lockfiles, unrelated histories |
 | 20 | Release & CI/CD git | 5 | changelogs, monorepo path filters, detached HEAD in CI, semver, verifying deploys |
 
-24 beginner, 42 intermediate, 36 advanced, 23 expert. 877 runnable steps and
-561 final checks in total.
+26 beginner, 42 intermediate, 36 advanced, 23 expert. 894 runnable steps and
+571 final checks in total.
 
 ## Testing the catalog
 
@@ -130,9 +130,9 @@ Create `scenarios/<ID>/scenario.json`. No server code changes. See
 - **M0 — sandbox engine** ✅ real git execution, path guard, repo-state extractor
 - **M1 — dashboard shell** ✅ catalog, lesson pane, commit graph, refs, reflog
 - **M2 — the full loop** ✅ step buttons, free terminal, file editor, grading, progress
-- **M3–M6 — the catalog** ✅ all 20 categories, 125 scenarios, all passing
+- **M3–M6 — the catalog** ✅ all 20 categories, 127 scenarios, all passing
 - **M7 — navigation** ✅ level filters, unsolved-only, progress bar, generated cheatsheet
-- **M8 — the path** ✅ a six-stage curriculum covering all 125 scenarios, in the UI and the CLI
+- **M8 — the path** ✅ a six-stage curriculum covering all 127 scenarios, in the UI and the CLI
 
 Next: `explain.md` long-form notes for the expert scenarios, and a spaced-repetition
 mode that resurfaces scenarios you solved a while ago.

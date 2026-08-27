@@ -1,0 +1,179 @@
+{
+  "id": "snapshots-status-decoded",
+  "title": "Every letter git status can print, and what it means",
+  "category": "snapshots",
+  "level": "beginner",
+  "order": 8,
+  "duration_min": 12,
+  "summary": "`MM`, ` D`, `A `, `??`, `UU`, `R ` — the two-column short format is the densest information git gives you. Produce each code deliberately and learn to read the whole thing at a glance.",
+  "concepts": ["two-column XY codes", "index column vs worktree column", "porcelain v1 and v2", "-sb branch line", "--ignored"],
+  "mental_model": "Every line is `XY path`. X is what the INDEX says versus the last commit; Y is what your DISK says versus the index. Read left-to-right as 'staged, then unstaged' and every code explains itself.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "staged-mod.py", "content": "STAGED_MOD = 1\n" } },
+    { "write": { "path": "both-mod.py", "content": "BOTH_MOD = 1\n" } },
+    { "write": { "path": "unstaged-mod.py", "content": "UNSTAGED_MOD = 1\n" } },
+    { "write": { "path": "to-delete.py", "content": "TO_DELETE = 1\n" } },
+    { "write": { "path": "to-rename.py", "content": "TO_RENAME = 1\nUNIQUE_CONTENT_SO_THE_RENAME_IS_DETECTED = True\n" } },
+    { "write": { "path": "to-delete-on-disk.py", "content": "TO_DELETE_ON_DISK = 1\n" } },
+    { "write": { "path": ".gitignore", "content": "*.log\n" } },
+    { "commit": { "message": "Add files in every state we are about to break" } }
+  ],
+  "steps": [
+    {
+      "title": "A clean tree prints nothing",
+      "why": "Silence is the base case, and worth seeing once. `-sb` adds a branch line even when there is nothing else to say.",
+      "commands": ["git status --short", "git status -sb", "git status"],
+      "expect": "One branch line and nothing else.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the tree starts clean" }
+      ]
+    },
+    {
+      "title": "Produce a modification in each column",
+      "why": "Three files, three states: staged only, unstaged only, and both. The two-column format is the only view that distinguishes them — `git status` in long form buries it in prose.",
+      "actions": [
+        { "write": { "path": "staged-mod.py", "content": "VALUE = 2\n" } },
+        { "run": "git add staged-mod.py" },
+        { "write": { "path": "unstaged-mod.py", "content": "VALUE = 2\n" } },
+        { "write": { "path": "both-mod.py", "content": "VALUE = 2\n" } },
+        { "run": "git add both-mod.py" },
+        { "write": { "path": "both-mod.py", "content": "VALUE = 3\n" } }
+      ],
+      "commands": ["git status --short"],
+      "expect": "M  staged-mod.py, ' M' unstaged-mod.py, MM both-mod.py.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": ["M  staged-mod.py", " M unstaged-mod.py", "MM both-mod.py"],
+          "label": "the three modification states are distinguishable",
+          "hint": "X is the index, Y is the working tree" }
+      ]
+    },
+    {
+      "title": "Additions, deletions and the difference between them",
+      "why": "`A ` is a new file staged. `D ` is a deletion staged. ` D` is a file you deleted on disk without telling git — which is why it still shows in `git ls-files`.",
+      "actions": [
+        { "write": { "path": "brand-new.py", "content": "NEW = True\n" } },
+        { "run": "git add brand-new.py" },
+        { "run": "git rm -q to-delete.py" },
+        { "delete": "to-delete-on-disk.py" }
+      ],
+      "commands": ["git status --short", "git ls-files | head -8"],
+      "expect": "A  brand-new.py, D  to-delete.py, ' D' to-delete-on-disk.py.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": ["A  brand-new.py", "D  to-delete.py", " D to-delete-on-disk.py"],
+          "label": "staged add, staged delete and unstaged delete each have their own code" }
+      ]
+    },
+    {
+      "title": "Renames only appear once staged",
+      "why": "`R ` shows a rename with both paths. Git infers it by comparing content, and only after the change is staged — before that you see a delete and an untracked file.",
+      "actions": [
+        { "run": "git mv to-rename.py renamed.py" }
+      ],
+      "commands": ["git status --short", "git status"],
+      "expect": "R  to-rename.py -> renamed.py.",
+      "verify": [
+        { "cmd": "git status --porcelain", "matches": "^R  to-rename.py -> renamed.py",
+          "label": "a staged rename shows as R with both paths" }
+      ]
+    },
+    {
+      "title": "Untracked and ignored",
+      "why": "`??` means git has never been told about the file. Ignored files are hidden entirely unless you ask — which is why a file matching .gitignore looks identical to one that does not exist.",
+      "actions": [
+        { "write": { "path": "scratch.txt", "content": "notes\n" } },
+        { "write": { "path": "debug.log", "content": "noise\n" } }
+      ],
+      "commands": ["git status --short", "git status --short --ignored", "git check-ignore -v debug.log"],
+      "expect": "?? scratch.txt in both; !! debug.log only with --ignored.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "?? scratch.txt",
+          "label": "untracked files show as ??" },
+        { "cmd": "git status --porcelain", "not_contains": "debug.log",
+          "label": "…and ignored files do not show at all by default" },
+        { "cmd": "git status --porcelain --ignored", "contains": "!! debug.log",
+          "label": "--ignored reveals them with !!" }
+      ]
+    },
+    {
+      "title": "The conflict codes",
+      "why": "During a merge, `U` appears in one or both columns. `UU` is both-modified, `DU` deleted-by-us, `AA` both-added. These are the only codes where the two columns are not 'staged, unstaged' — they are 'ours, theirs'.",
+      "actions": [
+        { "run": "git stash push -u -q -m \"park the demo states\"" },
+        { "run": "git switch -q -c conflict-demo" },
+        { "write": { "path": "shared.py", "content": "SETTING = 'theirs'\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Their version\"" },
+        { "run": "git switch -q main" },
+        { "write": { "path": "shared.py", "content": "SETTING = 'ours'\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Our version\"" },
+        { "run": "sh -c 'git merge conflict-demo || true'" }
+      ],
+      "commands": ["git status --short", "git status", "git ls-files -u"],
+      "expect": "AA shared.py — both sides added the same path.",
+      "verify": [
+        { "cmd": "git status --porcelain", "matches": "^(AA|UU) shared.py",
+          "label": "a conflict shows a U or AA code",
+          "hint": "U in either column means unmerged" }
+      ]
+    },
+    {
+      "title": "The machine-readable format",
+      "why": "`--porcelain=v1` is the stable two-column format for scripts. `v2` adds the object ids and modes on each line — everything a tool needs without running four more commands.",
+      "commands": ["git merge --abort", "git stash pop -q", "git status --porcelain=v1", "git status --porcelain=v2 --branch | head -12"],
+      "expect": "v1 compact, v2 verbose with shas and modes.",
+      "verify": [
+        { "cmd": "git status --porcelain=v2 --branch", "contains": "# branch.head",
+          "label": "v2 includes branch headers for scripts" }
+      ]
+    },
+    {
+      "title": "Read the branch line",
+      "why": "`-sb` prints `## main...origin/main [ahead 1, behind 2]`. Three facts — your branch, its upstream, and how far apart they are — in one line, and the answer to most 'why can I not push' questions.",
+      "commands": ["git status -sb", "git status --porcelain=v2 --branch | grep '^#'"],
+      "expect": "The branch line, with no upstream configured here."
+    },
+    {
+      "title": "Commit the demo and check it is clean",
+      "why": "Every state you produced is now visible in one screen. Learning to scan this instead of reading the long form is the single biggest speed-up in day-to-day git.",
+      "commands": ["git add -A", "git commit -q -m \"Demonstrate every status code\"", "git status --short", "git status --short --ignored"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true,
+          "label": "everything is committed and the tree is clean" },
+        { "cmd": "git status --porcelain --ignored", "contains": "!! debug.log",
+          "label": "…except the ignored file, which is exactly where it should be" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "the tree ends clean",
+      "hint": "commit everything the demo produced" },
+    { "cmd": "git status --porcelain --ignored", "contains": "!! debug.log",
+      "label": "the ignored file is still ignored" },
+    { "cmd": "git ls-files", "contains": "renamed.py",
+      "label": "the rename was committed" },
+    { "cmd": "git ls-files", "not_contains": ["to-delete.py", "to-delete-on-disk.py"],
+      "label": "both deletions were committed" },
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "three commits: the setup, the conflict demo and the cleanup" }
+  ],
+  "pitfalls": [
+    "The space matters. `M ` (staged) and ` M` (unstaged) differ only in position, and in a terminal they look almost identical — this is why `MM` surprises people.",
+    "A deleted file shows ` D` until you stage the deletion. `git add -A` or `git rm` stages it; `git add .` in older git did not.",
+    "Renames are detected, not recorded. An unstaged rename shows as a delete plus an untracked file, which is correct but alarming.",
+    "`--porcelain` output is guaranteed stable across git versions; the human format is not. Never parse `git status` without it.",
+    "`??` on a file you expected to be tracked usually means it matches a .gitignore rule you forgot. `git check-ignore -v` names the rule."
+  ],
+  "cheatsheet": [
+    ["git status --short", "the two-column view: X index, Y working tree"],
+    ["M  / ' M' / MM", "staged / unstaged / both"],
+    ["A  / D  / ' D'", "staged add / staged delete / deleted on disk only"],
+    ["R  old -> new", "staged rename"],
+    ["?? / !!", "untracked / ignored (with --ignored)"],
+    ["UU / AA / DU / UD", "conflict: unmerged, ours-and-theirs"],
+    ["git status -sb", "add the branch and ahead/behind line"],
+    ["git status --porcelain=v2", "machine-readable, with shas and modes"]
+  ]
+}
