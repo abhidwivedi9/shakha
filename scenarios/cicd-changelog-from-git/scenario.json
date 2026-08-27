@@ -1,0 +1,134 @@
+{
+  "id": "cicd-changelog-from-git",
+  "title": "Generate the release notes from git, not from memory",
+  "category": "cicd",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 14,
+  "summary": "Build a changelog straight out of the commit range since the last tag, grouped by Conventional Commit type, with ticket references — the whole pipeline in a handful of commands.",
+  "concepts": ["describe --abbrev=0", "tag..HEAD ranges", "--no-merges", "pretty formats", "trailers in release notes"],
+  "mental_model": "A changelog is a formatted `git log` over one range. Everything hard about it — which commits, which order, which fields — is a range and a format string. Nothing needs to be remembered or maintained by hand.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"chore: initial release\"" },
+    { "run": "git tag -a v1.0.0 -m \"Release 1.0.0\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"feat(dosing): add calibrated dose calculation\" --trailer \"Refs: ABH-101\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"fix(pump): stop stalling below 900 RPM\" --trailer \"Refs: ABH-204\"" },
+    { "run": "git switch -q -c feature/alerts" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"feat(alerts): warn above 29C\" --trailer \"Refs: ABH-207\"" },
+    { "run": "git switch -q main" },
+    { "run": "git merge -q --no-ff -m \"Merge feature/alerts\" feature/alerts" },
+    { "write": { "path": "README.md", "content": "# Reef\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"docs: document the alert thresholds\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.35\n" } },
+    { "run": "git commit -q -a -m \"fix(dosing): reject non-positive doses\" --trailer \"Refs: ABH-233\"" }
+  ],
+  "steps": [
+    {
+      "title": "Find the previous release automatically",
+      "why": "`describe --tags --abbrev=0` prints the nearest tag with no suffix — the last release, discovered rather than hardcoded. This is the first line of every changelog script.",
+      "commands": ["git describe --tags --abbrev=0", "git describe --tags", "git tag --sort=-v:refname"],
+      "expect": "v1.0.0, found without anyone typing it.",
+      "verify": [
+        { "cmd": "git describe --tags --abbrev=0", "equals": "v1.0.0",
+          "label": "the previous release tag is discoverable" }
+      ]
+    },
+    {
+      "title": "List what has shipped since",
+      "why": "`<tag>..HEAD` with `--no-merges` gives the human-written commits and drops the merge noise. That range is the entire scope of the release.",
+      "commands": ["sh -c 'git log --oneline --no-merges $(git describe --tags --abbrev=0)..HEAD'", "sh -c 'git rev-list --count --no-merges $(git describe --tags --abbrev=0)..HEAD'"],
+      "expect": "Five commits — two features, two fixes, one docs change.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --count --no-merges $(git describe --tags --abbrev=0)..HEAD'",
+          "equals": "5", "label": "the release range is five commits" }
+      ]
+    },
+    {
+      "title": "Format them as release notes",
+      "why": "A pretty format turns the log into markdown directly. `%s` is the subject and `%h` the sha — enough for a usable changelog in one command.",
+      "commands": ["sh -c 'git log --no-merges --pretty=format:\"- %s (%h)\" $(git describe --tags --abbrev=0)..HEAD'"],
+      "expect": "A bulleted list you could paste into a release."
+    },
+    {
+      "title": "Group by Conventional Commit type",
+      "why": "Because the subjects follow a convention, grepping by prefix produces sections. This is all that changelog generators do — the convention is what makes it possible, not the tool.",
+      "commands": ["sh -c 'range=$(git describe --tags --abbrev=0)..HEAD; for t in feat fix docs; do echo; echo \"### $t\"; git log --no-merges --pretty=format:\"- %s\" $range | grep \"^- $t\" || echo \"- none\"; done'"],
+      "expect": "Three sections, populated from the commit messages."
+    },
+    {
+      "title": "Pull the ticket references out",
+      "why": "`%(trailers:key=Refs,valueonly)` extracts the structured field. Now the release notes link to tickets without anyone maintaining a mapping by hand.",
+      "commands": ["sh -c 'git log --no-merges --pretty=format:\"- %s [%(trailers:key=Refs,valueonly)]\" $(git describe --tags --abbrev=0)..HEAD'", "sh -c 'git log --no-merges --pretty=format:\"%(trailers:key=Refs,valueonly)\" $(git describe --tags --abbrev=0)..HEAD | sort -u | tr -d \"\\n\"'"],
+      "expect": "Each entry annotated with its ticket, and a de-duplicated list of every ticket in the release."
+    },
+    {
+      "title": "Write the changelog file",
+      "why": "Generate it into CHANGELOG.md and commit it as part of the release. Because it is generated, it can never drift from what actually shipped.",
+      "actions": [
+        { "run": "sh -c 'range=$(git describe --tags --abbrev=0)..HEAD; { echo \"# Changelog\"; echo; echo \"## v1.1.0\"; echo; for t in feat fix docs chore; do lines=$(git log --no-merges --pretty=format:\"- %s [%(trailers:key=Refs,valueonly)]\" $range | grep \"^- $t\"); [ -n \"$lines\" ] || continue; case $t in feat) echo \"### Features\";; fix) echo \"### Fixes\";; docs) echo \"### Documentation\";; *) echo \"### Other\";; esac; echo \"$lines\"; echo; done; } > CHANGELOG.md'" },
+        { "run": "git add CHANGELOG.md" },
+        { "run": "git commit -q -m \"chore(release): changelog for 1.1.0\"" }
+      ],
+      "commands": ["cat CHANGELOG.md", "git log --oneline -2"],
+      "verify": [
+        { "cmd": "cat CHANGELOG.md", "contains": ["### Features", "### Fixes", "ABH-101", "ABH-204"],
+          "label": "the changelog is generated from the commit range",
+          "hint": "git log <last-tag>..HEAD with a pretty format" }
+      ]
+    },
+    {
+      "title": "Tag the release and verify the notes match",
+      "why": "Tag after generating, so the changelog commit is inside the release. Then `git log v1.0.0..v1.1.0` should list exactly what the changelog claims — a check worth building into CI.",
+      "actions": [
+        { "run": "git tag -a v1.1.0 -m \"Release 1.1.0\"" }
+      ],
+      "commands": ["git describe --tags", "sh -c 'git log --oneline --no-merges v1.0.0..v1.1.0'", "sh -c 'git log --pretty=%s --no-merges v1.0.0..v1.1.0 | grep -c \"^feat\"'"],
+      "expect": "Two feat commits, matching the Features section.",
+      "verify": [
+        { "cmd": "git describe --tags", "equals": "v1.1.0",
+          "label": "the release is tagged at the changelog commit" },
+        { "cmd": "sh -c 'git log --pretty=%s --no-merges v1.0.0..v1.1.0 | grep -c \"^feat\"'", "equals": "2",
+          "label": "the range contains exactly the two features the changelog lists" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat CHANGELOG.md", "contains": ["### Features", "### Fixes", "ABH-101", "ABH-233"],
+      "label": "a grouped changelog with ticket references was generated from git",
+      "hint": "git log <last-tag>..HEAD, grouped by Conventional Commit prefix" },
+    { "cmd": "cat CHANGELOG.md", "not_contains": "Merge feature",
+      "label": "merge commits were excluded",
+      "hint": "--no-merges" },
+    { "cmd": "git describe --tags", "equals": "v1.1.0",
+      "label": "the release is tagged" },
+    { "cmd": "git ls-files", "contains": "CHANGELOG.md",
+      "label": "the generated changelog is committed with the release" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`git describe --tags --abbrev=0` returns the nearest tag on the current branch. On a release branch that is what you want; on a feature branch it may surprise you.",
+    "Squash-merging rewrites subjects, so a Conventional Commit prefix set on the branch may not survive to main. Enforce the format on the merge commit too.",
+    "Shallow CI clones cannot see the previous tag. `fetch-depth: 0` in your workflow, or describe fails and the changelog comes out empty.",
+    "Generate the changelog BEFORE tagging, so the changelog commit is part of the release it describes.",
+    "A commit-msg hook enforcing the convention is what makes all of this reliable. Without it the grouping quietly loses commits."
+  ],
+  "cheatsheet": [
+    ["git describe --tags --abbrev=0", "the previous release tag"],
+    ["git log --no-merges <tag>..HEAD", "what has shipped since"],
+    ["git log --pretty=format:'- %s (%h)'", "markdown bullets"],
+    ["git log --pretty=format:'%(trailers:key=Refs,valueonly)'", "ticket references"],
+    ["git rev-list --count <tag>..HEAD", "how many commits in the release"],
+    ["git shortlog -sn <tag>..HEAD", "who contributed to it"],
+    ["git log --oneline v1.0.0..v1.1.0", "verify the notes against the range"]
+  ]
+}

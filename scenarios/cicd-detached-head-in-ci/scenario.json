@@ -1,0 +1,139 @@
+{
+  "id": "cicd-detached-head-in-ci",
+  "title": "Why CI is always on a detached HEAD, and what to do about it",
+  "category": "cicd",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "Your build script calls `git rev-parse --abbrev-ref HEAD` and gets 'HEAD'. Understand why every CI system checks out a commit rather than a branch, and get the information you actually need.",
+  "concepts": ["detached HEAD in CI", "rev-parse --abbrev-ref", "name-rev", "branch --contains", "CI environment variables", "reproducible checkouts"],
+  "mental_model": "CI checks out an exact commit so the build is reproducible — a branch could move mid-run. That means there is no current branch, and any script that assumes one gets the literal string 'HEAD'.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "write": { "path": "ci/stamp.sh", "content": "#!/bin/sh\n# Naive version stamping — breaks on a detached HEAD.\nbranch=$(git rev-parse --abbrev-ref HEAD)\nsha=$(git rev-parse --short HEAD)\necho \"building branch=$branch sha=$sha\"\n" } },
+    { "run": "sh -c 'chmod +x ci/stamp.sh'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add app and CI stamp script\"" },
+    { "run": "git tag -a v1.0.0 -m \"Release 1.0.0\"" },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git push -q origin --tags" },
+    { "run": "git switch -q -c feature/dosing" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add dosing\"" },
+    { "run": "git push -q -u origin feature/dosing" }
+  ],
+  "steps": [
+    {
+      "title": "It works on your machine",
+      "why": "On a developer checkout there is a current branch, so the script prints something sensible. That is exactly why the bug reaches CI unnoticed.",
+      "commands": ["sh -c 'sh ci/stamp.sh'", "git rev-parse --abbrev-ref HEAD"],
+      "expect": "branch=feature/dosing."
+    },
+    {
+      "title": "Simulate what CI does",
+      "why": "A CI runner clones and checks out the exact commit, not the branch — so the build cannot change underneath itself if someone pushes mid-run. `--detach` is precisely what `actions/checkout` and its equivalents do.",
+      "actions": [
+        { "run": "sh -c 'git clone -q \"file://$(cd ../origin.git && pwd)\" ../ci-workspace'" },
+        { "cwd": "ci-workspace", "run": "sh -c 'git fetch -q origin feature/dosing && git checkout -q --detach FETCH_HEAD'" }
+      ],
+      "cwd": "ci-workspace",
+      "commands": ["git status -sb", "git rev-parse --abbrev-ref HEAD", "sh -c 'sh ci/stamp.sh'"],
+      "expect": "branch=HEAD — the literal string, which then ends up in an image tag.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "cwd": "ci-workspace", "equals": "HEAD",
+          "label": "the CI workspace is on a detached HEAD" }
+      ]
+    },
+    {
+      "title": "Ask which branches contain this commit",
+      "why": "`branch -r --contains HEAD` answers 'where does this commit live'. It is the git-native way to recover the branch name, and it works even when no CI variable is available.",
+      "cwd": "ci-workspace",
+      "commands": ["git branch -r --contains HEAD", "git name-rev --name-only HEAD", "sh -c 'git branch -r --contains HEAD | head -1 | sed \"s|.*origin/||\" | tr -d \" \"'"],
+      "expect": "origin/feature/dosing — the branch, recovered from the commit.",
+      "verify": [
+        { "cmd": "git branch -r --contains HEAD", "cwd": "ci-workspace", "contains": "feature/dosing",
+          "label": "the branch name is recoverable from the commit" }
+      ]
+    },
+    {
+      "title": "Fix the stamp script",
+      "why": "Prefer the CI platform's variable when present, fall back to git, and never emit the literal 'HEAD'. Three lines, and the script now works identically on a laptop and on a runner.",
+      "actions": [
+        { "cwd": "ci-workspace", "write": { "path": "ci/stamp.sh", "content": "#!/bin/sh\n# Robust on a detached HEAD and on a normal checkout.\n\nbranch=\"${CI_BRANCH:-${GITHUB_REF_NAME:-}}\"\n\nif [ -z \"$branch\" ]; then\n  branch=$(git rev-parse --abbrev-ref HEAD)\nfi\n\nif [ \"$branch\" = \"HEAD\" ]; then\n  branch=$(git branch -r --contains HEAD 2>/dev/null | head -1 | sed 's|.*origin/||' | tr -d ' ')\nfi\n\n[ -n \"$branch\" ] || branch=\"detached\"\n\nsha=$(git rev-parse --short HEAD)\nversion=$(git describe --tags --always --dirty 2>/dev/null || echo \"$sha\")\n\necho \"building branch=$branch sha=$sha version=$version\"\n" } },
+        { "cwd": "ci-workspace", "run": "sh -c 'chmod +x ci/stamp.sh'" }
+      ],
+      "cwd": "ci-workspace",
+      "commands": ["sh -c 'sh ci/stamp.sh'"],
+      "expect": "A real branch name, a sha, and a version — on a detached HEAD.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/stamp.sh'", "cwd": "ci-workspace", "contains": "branch=feature/dosing",
+          "label": "the script recovers the branch on a detached HEAD",
+          "hint": "fall back to git branch -r --contains HEAD" },
+        { "cmd": "sh -c 'sh ci/stamp.sh'", "cwd": "ci-workspace", "not_contains": "branch=HEAD",
+          "label": "…and never emits the literal string HEAD" }
+      ]
+    },
+    {
+      "title": "Check the version stamp too",
+      "why": "`git describe` needs tags, and a CI clone often has none. `--always` falls back to a sha instead of failing the build, and fetching tags makes the real version available.",
+      "cwd": "ci-workspace",
+      "commands": ["git tag", "sh -c 'git describe --tags --always'", "git fetch -q --tags origin", "git tag", "sh -c 'git describe --tags --always'", "sh -c 'sh ci/stamp.sh'"],
+      "expect": "A bare sha before fetching tags, then a proper v1.0.0-based version afterwards.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/stamp.sh'", "cwd": "ci-workspace", "contains": "version=v1.0.0",
+          "label": "the version stamp works once tags are fetched",
+          "hint": "git fetch --tags — CI clones do not always include them" }
+      ]
+    },
+    {
+      "title": "Prove the environment variable path works too",
+      "why": "When the platform supplies the branch, use it — it is authoritative and free. The git fallback exists for local runs and for platforms that do not.",
+      "cwd": "ci-workspace",
+      "commands": ["sh -c 'GITHUB_REF_NAME=feature/dosing sh ci/stamp.sh'", "sh -c 'CI_BRANCH=release/1.0 sh ci/stamp.sh'"],
+      "expect": "The variable wins when set."
+    },
+    {
+      "title": "Commit the fix back",
+      "why": "The fix belongs in the repository, not in a runner's YAML. Copy it back to the working checkout and commit it so every future build has it.",
+      "actions": [
+        { "run": "sh -c 'cp ../ci-workspace/ci/stamp.sh ci/stamp.sh'" },
+        { "run": "git add ci/stamp.sh" },
+        { "run": "git commit -q -m \"ci: make version stamping work on a detached HEAD\"" }
+      ],
+      "commands": ["sh -c 'sh ci/stamp.sh'", "git log --oneline -2"],
+      "verify": [
+        { "cmd": "sh -c 'sh ci/stamp.sh'", "contains": "branch=feature/dosing",
+          "label": "the fixed script works on a normal checkout as well" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'sh ci/stamp.sh'", "contains": "branch=feature/dosing",
+      "label": "the stamp script works on an attached checkout",
+      "hint": "prefer the CI variable, fall back to git, never emit 'HEAD'" },
+    { "cmd": "sh -c 'sh ci/stamp.sh'", "cwd": "ci-workspace", "contains": "branch=feature/dosing",
+      "label": "…and on a detached CI checkout" },
+    { "cmd": "sh -c 'sh ci/stamp.sh'", "cwd": "ci-workspace", "contains": "version=v1.0.0",
+      "label": "the version comes from the tag once tags are fetched" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "cwd": "ci-workspace", "equals": "HEAD",
+      "label": "the CI workspace is still detached — the fix is in the script, not the checkout" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`git rev-parse --abbrev-ref HEAD` returns the literal string 'HEAD' when detached. Image tags called `HEAD` in a registry are always this bug.",
+    "`git branch --contains` needs the remote refs. A `--depth 1` clone of a single ref has none, so fetch the branch or use the platform variable.",
+    "`git describe` fails outright with no tags. Always pass `--always` in a build script, and fetch tags if you want real versions.",
+    "On a pull-request build, many platforms check out a temporary merge commit rather than your branch tip. `git log -1` there shows a commit nobody wrote.",
+    "Detached HEAD in CI is correct and deliberate. The fix is always in your script, never in forcing the runner onto a branch."
+  ],
+  "cheatsheet": [
+    ["git rev-parse --abbrev-ref HEAD", "'HEAD' when detached — check for it"],
+    ["git branch -r --contains HEAD", "which remote branches hold this commit"],
+    ["git name-rev --name-only HEAD", "a human-readable name for any commit"],
+    ["git describe --tags --always --dirty", "a version string that never fails"],
+    ["git fetch --tags", "CI clones often have none"],
+    ["${GITHUB_REF_NAME:-}", "prefer the platform's own variable"]
+  ]
+}

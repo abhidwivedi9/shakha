@@ -1,0 +1,147 @@
+{
+  "id": "cicd-semantic-version-bump",
+  "title": "Let the commits decide the version number",
+  "category": "cicd",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "Read the commits since the last tag, decide major/minor/patch from their Conventional Commit types, and cut the tag automatically — no version file, no arguments about the number.",
+  "concepts": ["semantic versioning from commits", "BREAKING CHANGE trailers", "describe --abbrev=0", "annotated release tags", "release automation"],
+  "mental_model": "The version is a function of the commits in the range. A breaking change bumps major, a feat bumps minor, a fix bumps patch — and because it is computed, nobody can forget to do it or disagree about it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "api.py", "content": "def get(id):\n    return {'id': id}\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"chore: initial release\"" },
+    { "run": "git tag -a v1.4.2 -m \"Release 1.4.2\"" },
+    { "write": { "path": "ci/next-version.sh", "content": "#!/bin/sh\n# Compute the next semantic version from the commits since the last tag.\n\nlast=$(git describe --tags --abbrev=0 2>/dev/null || echo \"v0.0.0\")\nrange=\"$last..HEAD\"\n\nversion=${last#v}\nmajor=$(echo \"$version\" | cut -d. -f1)\nminor=$(echo \"$version\" | cut -d. -f2)\npatch=$(echo \"$version\" | cut -d. -f3)\n\nbump=none\nfor sha in $(git rev-list --no-merges $range); do\n  body=$(git log -1 --format=%B \"$sha\")\n  subject=$(git log -1 --format=%s \"$sha\")\n\n  case \"$body\" in\n    *\"BREAKING CHANGE\"*) bump=major; break ;;\n  esac\n  case \"$subject\" in\n    *\"!:\"*) bump=major; break ;;\n    feat*) [ \"$bump\" = \"none\" ] || [ \"$bump\" = \"patch\" ] && bump=minor ;;\n    fix*|perf*) [ \"$bump\" = \"none\" ] && bump=patch ;;\n  esac\ndone\n\ncase \"$bump\" in\n  major) major=$((major + 1)); minor=0; patch=0 ;;\n  minor) minor=$((minor + 1)); patch=0 ;;\n  patch) patch=$((patch + 1)) ;;\n  none)  echo \"$last\"; exit 0 ;;\nesac\n\necho \"v$major.$minor.$patch\"\n" } },
+    { "run": "sh -c 'chmod +x ci/next-version.sh'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"chore(ci): add version computation\"" }
+  ],
+  "steps": [
+    {
+      "title": "Nothing releasable yet",
+      "why": "Only a chore commit since the tag. The script returns the current version unchanged — a release that would contain no user-visible change should not get a new number.",
+      "commands": ["git describe --tags --abbrev=0", "sh -c 'sh ci/next-version.sh'", "sh -c 'git log --oneline --no-merges $(git describe --tags --abbrev=0)..HEAD'"],
+      "expect": "v1.4.2 — no bump.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v1.4.2",
+          "label": "a chore-only range produces no version bump" }
+      ]
+    },
+    {
+      "title": "A fix bumps the patch",
+      "why": "One `fix:` commit in the range moves 1.4.2 to 1.4.3. The rule is mechanical, which is the point — the number now describes the change rather than someone's judgement of it.",
+      "actions": [
+        { "write": { "path": "api.py", "content": "def get(id):\n    if id is None:\n        raise ValueError('id is required')\n    return {'id': id}\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"fix(api): reject a missing id\" --trailer \"Refs: ABH-301\"" }
+      ],
+      "commands": ["sh -c 'sh ci/next-version.sh'"],
+      "expect": "v1.4.3.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v1.4.3",
+          "label": "a fix bumps the patch component" }
+      ]
+    },
+    {
+      "title": "A feature outranks a fix",
+      "why": "Add a `feat:` commit and the same range now bumps the minor and resets the patch. The highest-ranking change in the range decides, which is exactly how semantic versioning is specified.",
+      "actions": [
+        { "write": { "path": "api.py", "content": "def get(id):\n    if id is None:\n        raise ValueError('id is required')\n    return {'id': id}\n\n\ndef list_all():\n    return []\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"feat(api): add a list endpoint\" --trailer \"Refs: ABH-302\"" }
+      ],
+      "commands": ["sh -c 'sh ci/next-version.sh'", "sh -c 'git log --oneline --no-merges $(git describe --tags --abbrev=0)..HEAD'"],
+      "expect": "v1.5.0 — minor bump, patch reset.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v1.5.0",
+          "label": "a feature bumps the minor and resets the patch" }
+      ]
+    },
+    {
+      "title": "A breaking change outranks everything",
+      "why": "A `BREAKING CHANGE:` trailer — or a `!` before the colon — forces a major bump regardless of what else is in the range. This is the signal consumers depend on, so it must be in the commit rather than in someone's head.",
+      "actions": [
+        { "write": { "path": "api.py", "content": "def get(id, tenant):\n    if id is None:\n        raise ValueError('id is required')\n    return {'id': id, 'tenant': tenant}\n\n\ndef list_all(tenant):\n    return []\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"feat(api)!: require a tenant on every call\" -m \"BREAKING CHANGE: get() and list_all() now take a required tenant argument.\" --trailer \"Refs: ABH-310\"" }
+      ],
+      "commands": ["sh -c 'sh ci/next-version.sh'", "git log -1 --format=%B"],
+      "expect": "v2.0.0 — major bump, minor and patch reset.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v2.0.0",
+          "label": "a breaking change bumps the major version",
+          "hint": "BREAKING CHANGE: in the body, or ! before the colon in the subject" }
+      ]
+    },
+    {
+      "title": "Cut the release",
+      "why": "Compute, tag, verify. Because the tag is annotated, it records who released it and when — and `git describe` immediately reports the clean version.",
+      "actions": [
+        { "run": "sh -c 'next=$(sh ci/next-version.sh); git tag -a \"$next\" -m \"Release $next\"'" }
+      ],
+      "commands": ["git describe --tags", "git tag --sort=-v:refname", "sh -c 'git cat-file -p $(git rev-parse v2.0.0) | head -4'"],
+      "verify": [
+        { "cmd": "git describe --tags", "equals": "v2.0.0",
+          "label": "the computed version was tagged" },
+        { "cmd": "git cat-file -t v2.0.0", "equals": "tag",
+          "label": "…as an annotated tag" }
+      ]
+    },
+    {
+      "title": "Confirm the next range starts empty",
+      "why": "After tagging, `describe --abbrev=0` returns the new tag and the range is empty, so the script proposes no bump. The loop is stable — running the release twice does not double-bump.",
+      "commands": ["git describe --tags --abbrev=0", "sh -c 'git log --oneline $(git describe --tags --abbrev=0)..HEAD | wc -l'", "sh -c 'sh ci/next-version.sh'"],
+      "expect": "v2.0.0 again — idempotent.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v2.0.0",
+          "label": "running the release again proposes no further bump" }
+      ]
+    },
+    {
+      "title": "Guard it in CI",
+      "why": "The rule only works if the messages follow the convention. A commit-msg hook locally and a CI check on the pull request are what make the computed version trustworthy.",
+      "actions": [
+        { "write": { "path": "ci/check-messages.sh", "content": "#!/bin/sh\n# Reject any commit in the range that does not follow the convention.\nbase=\"${1:-$(git describe --tags --abbrev=0)}\"\nstatus=0\n\nfor sha in $(git rev-list --no-merges \"$base..HEAD\"); do\n  subject=$(git log -1 --format=%s \"$sha\")\n  case \"$subject\" in\n    feat*|fix*|docs*|refactor*|test*|chore*|perf*) : ;;\n    *) echo \"non-conventional: $(git log -1 --format='%h %s' $sha)\" >&2; status=1 ;;\n  esac\ndone\n\n[ \"$status\" -eq 0 ] && echo \"all commit messages follow the convention\"\nexit $status\n" } },
+        { "run": "sh -c 'chmod +x ci/check-messages.sh'" },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"chore(ci): validate commit message format\"" }
+      ],
+      "commands": ["sh -c 'sh ci/check-messages.sh v1.4.2'", "sh -c 'sh ci/next-version.sh'", "git ls-files ci"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "ci/check-messages.sh",
+          "label": "a message-format check is committed alongside the version script" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git tag", "contains": "v2.0.0",
+      "label": "the release version was computed from the commits and tagged",
+      "hint": "BREAKING CHANGE in the range forces a major bump" },
+    { "cmd": "git cat-file -t v2.0.0", "equals": "tag",
+      "label": "the release tag is annotated" },
+    { "cmd": "sh -c 'sh ci/next-version.sh'", "equals": "v2.0.0",
+      "label": "the computation is idempotent after tagging" },
+    { "cmd": "git ls-files", "contains": ["ci/next-version.sh", "ci/check-messages.sh"],
+      "label": "both the version rule and its guard live in the repository" },
+    { "cmd": "sh -c 'sh ci/check-messages.sh v1.4.2'", "contains": "follow the convention",
+      "label": "every commit in the release follows the convention" }
+  ],
+  "pitfalls": [
+    "Squash-merging replaces the branch's subjects with the pull-request title. If that title is not conventional, the version computation silently sees a chore.",
+    "`BREAKING CHANGE` must be in the commit body as a trailer, or marked with `!` in the subject. A note in the pull-request description is invisible to git.",
+    "A shallow CI clone cannot find the previous tag, so the script falls back to v0.0.0 and proposes a wrong version. Fetch tags and full history.",
+    "Never keep the version in a committed file as well — two sources of truth will disagree within a month. Derive it from the tag at build time.",
+    "Tag after generating the changelog, so the changelog commit is included in the release it describes."
+  ],
+  "cheatsheet": [
+    ["git describe --tags --abbrev=0", "the previous release"],
+    ["git rev-list --no-merges <tag>..HEAD", "the commits under consideration"],
+    ["git log -1 --format=%B <sha>", "the full message, for BREAKING CHANGE"],
+    ["feat: / fix: / feat!:", "minor / patch / major"],
+    ["git tag -a v2.0.0 -m \"...\"", "cut the release"],
+    ["git push --follow-tags", "publish the commits and the tag together"]
+  ]
+}

@@ -1,0 +1,138 @@
+{
+  "id": "cicd-verify-what-shipped",
+  "title": "Production says v2.1.0. Prove what is actually running.",
+  "category": "cicd",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "During an incident, the only useful question is which commit is deployed. Stamp builds with a sha, verify a deployed artefact against the repository, and answer 'is my fix live yet' in one command.",
+  "concepts": ["build stamping with a sha", "tag --contains", "branch --contains", "verifying a deployed tree", "ls-tree comparison"],
+  "mental_model": "A version string is a label; a commit sha is an identity. Stamp the sha into every build and every deployment question — what is running, does it include this fix, does the artefact match the source — becomes a git query with a definite answer.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = 'dev'\n\n\ndef handle(request):\n    return {'ok': True}\n" } },
+    { "write": { "path": "ci/build.sh", "content": "#!/bin/sh\n# Produce a build directory stamped with the exact commit it came from.\nout=\"${1:-build}\"\nrm -rf \"$out\"\nmkdir -p \"$out\"\n\ngit archive --format=tar HEAD | (cd \"$out\" && tar -xf -)\n\n{\n  echo \"commit=$(git rev-parse HEAD)\"\n  echo \"short=$(git rev-parse --short HEAD)\"\n  echo \"version=$(git describe --tags --always --dirty)\"\n  echo \"tree=$(git rev-parse HEAD^{tree})\"\n} > \"$out/BUILDINFO\"\n\necho \"built $out from $(git rev-parse --short HEAD)\"\n" } },
+    { "run": "sh -c 'chmod +x ci/build.sh'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"feat: add the request handler\"" },
+    { "run": "git tag -a v2.0.0 -m \"Release 2.0.0\"" },
+    { "write": { "path": "app.py", "content": "VERSION = 'dev'\n\n\ndef handle(request):\n    if request is None:\n        return {'ok': False, 'error': 'empty request'}\n    return {'ok': True}\n" } },
+    { "run": "git commit -q -a -m \"fix: handle an empty request\" --trailer \"Refs: ABH-450\"" },
+    { "run": "git tag -a v2.1.0 -m \"Release 2.1.0\"" },
+    { "write": { "path": "app.py", "content": "VERSION = 'dev'\n\n\ndef handle(request):\n    if request is None:\n        return {'ok': False, 'error': 'empty request'}\n    return {'ok': True, 'trace': True}\n" } },
+    { "run": "git commit -q -a -m \"feat: add trace flags\" --trailer \"Refs: ABH-460\"" }
+  ],
+  "steps": [
+    {
+      "title": "Build an artefact stamped with its commit",
+      "why": "`git archive` exports the tree at a commit — no .git directory, no history, exactly what a deployment should contain. The BUILDINFO file records the sha, which is the piece that makes everything afterwards answerable.",
+      "actions": [
+        { "run": "sh -c 'git checkout -q v2.1.0 && sh ci/build.sh ../deployed && git checkout -q main'" }
+      ],
+      "commands": ["sh -c 'ls ../deployed'", "sh -c 'cat ../deployed/BUILDINFO'"],
+      "expect": "The application files plus a BUILDINFO naming the exact commit.",
+      "verify": [
+        { "cmd": "sh -c 'grep -c version=v2.1.0 ../deployed/BUILDINFO'", "equals": "1",
+          "label": "the artefact is stamped with the release version" }
+      ]
+    },
+    {
+      "title": "Answer the first incident question",
+      "why": "'What is running?' The sha in BUILDINFO resolves to a commit, a message and a date. This takes seconds and removes all guessing from the first five minutes of an incident.",
+      "commands": ["sh -c 'sha=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); echo $sha; git log -1 --format=\"%h %ad %s\" --date=short $sha'"],
+      "expect": "The deployed commit, named."
+    },
+    {
+      "title": "Answer the second: is my fix live?",
+      "why": "`git merge-base --is-ancestor <fix> <deployed>` is a yes/no answer, scriptable and unambiguous. It beats reading version numbers, which lie whenever someone re-tags or hotfixes.",
+      "commands": ["sh -c 'fix=$(git log -1 --format=%H --grep=\"handle an empty request\"); dep=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); if git merge-base --is-ancestor $fix $dep; then echo \"ABH-450 IS deployed\"; else echo \"ABH-450 is NOT deployed\"; fi'", "sh -c 'new=$(git log -1 --format=%H --grep=\"trace flags\"); dep=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); if git merge-base --is-ancestor $new $dep; then echo \"ABH-460 IS deployed\"; else echo \"ABH-460 is NOT deployed\"; fi'"],
+      "expect": "The fix is deployed; the trace feature is not.",
+      "verify": [
+        { "cmd": "sh -c 'fix=$(git log -1 --format=%H --grep=\"handle an empty request\"); dep=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git merge-base --is-ancestor $fix $dep && echo yes'",
+          "contains": "yes", "label": "the fix is provably in the deployed commit" }
+      ]
+    },
+    {
+      "title": "Which release contains a given commit",
+      "why": "`tag --contains` answers it from the other direction: given a commit, which releases shipped it. This is the query for 'which customers have this fix'.",
+      "commands": ["sh -c 'git tag --contains $(git log -1 --format=%H --grep=\"handle an empty request\")'", "sh -c 'git tag --contains $(git log -1 --format=%H --grep=\"trace flags\") || echo \"no release contains it yet\"'"],
+      "expect": "v2.1.0 for the fix, nothing for the unreleased feature.",
+      "verify": [
+        { "cmd": "sh -c 'git tag --contains $(git log -1 --format=%H --grep=\"handle an empty request\")'",
+          "contains": "v2.1.0", "label": "the fix shipped in v2.1.0" }
+      ]
+    },
+    {
+      "title": "Verify the artefact really matches the source",
+      "why": "The recorded tree sha is the strongest check available: recompute it from the repository and compare. If they differ, something modified the build after it left CI — which is exactly the kind of thing you want to detect during an incident.",
+      "commands": ["sh -c 'grep ^tree= ../deployed/BUILDINFO'", "sh -c 'echo repository tree: $(git rev-parse v2.1.0^{tree})'", "sh -c 'stamped=$(grep ^tree= ../deployed/BUILDINFO | cut -d= -f2); actual=$(git rev-parse v2.1.0^{tree}); if [ \"$stamped\" = \"$actual\" ]; then echo \"artefact matches the tagged source\"; else echo \"MISMATCH\"; fi'"],
+      "expect": "A match — the deployed tree is the tagged tree.",
+      "verify": [
+        { "cmd": "sh -c 'stamped=$(grep ^tree= ../deployed/BUILDINFO | cut -d= -f2); actual=$(git rev-parse v2.1.0^{tree}); test \"$stamped\" = \"$actual\" && echo match'",
+          "contains": "match",
+          "label": "the deployed artefact matches the source it claims to come from" }
+      ]
+    },
+    {
+      "title": "Catch a tampered deployment",
+      "why": "Someone edits a file on the server 'just to test something'. Comparing the actual files against the tree the artefact claims catches it immediately — a hand-edit on production is invisible to any version number.",
+      "actions": [
+        { "run": "sh -c 'printf \"\\n# hand-edited on the server\\nDEBUG = True\\n\" >> ../deployed/app.py'" }
+      ],
+      "commands": ["sh -c 'sha=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git show $sha:app.py > /tmp/expected-app.py 2>/dev/null || git show $sha:app.py > expected-app.py; diff -q ../deployed/app.py expected-app.py && echo \"matches\" || echo \"DEPLOYED FILE DIFFERS FROM ITS COMMIT\"'", "sh -c 'sha=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git show $sha:app.py > expected-app.py; diff ../deployed/app.py expected-app.py | head -5'"],
+      "expect": "A clear difference report naming the hand-edit.",
+      "verify": [
+        { "cmd": "sh -c 'sha=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git show $sha:app.py > expected-app.py; diff -q ../deployed/app.py expected-app.py >/dev/null && echo same || echo differs'",
+          "contains": "differs",
+          "label": "the hand-edit on the server is detectable" }
+      ]
+    },
+    {
+      "title": "Make the stamp part of every build",
+      "why": "Commit the build script so every artefact carries its provenance. The whole scenario only works because one file records a sha — and that costs four lines in a build script.",
+      "actions": [
+        { "run": "sh -c 'rm -f expected-app.py'" },
+        { "run": "git add -A" },
+        { "run": "sh -c 'git commit -q -m \"ci: stamp builds with their commit and tree\" --allow-empty'" }
+      ],
+      "commands": ["git ls-files ci", "sh -c 'sh ci/build.sh ../current && cat ../current/BUILDINFO'", "git log --oneline -3"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "ci/build.sh",
+          "label": "the stamping build script is committed" },
+        { "cmd": "sh -c 'grep -c ^commit= ../current/BUILDINFO'", "equals": "1",
+          "label": "a fresh build carries its own commit stamp" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'grep -c version=v2.1.0 ../deployed/BUILDINFO'", "equals": "1",
+      "label": "the deployed artefact records the exact release it came from",
+      "hint": "stamp git describe and git rev-parse output into the build" },
+    { "cmd": "sh -c 'fix=$(git log -1 --format=%H --grep=\"handle an empty request\"); dep=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git merge-base --is-ancestor $fix $dep && echo yes'",
+      "contains": "yes",
+      "label": "you can prove whether a given fix is deployed" },
+    { "cmd": "sh -c 'git tag --contains $(git log -1 --format=%H --grep=\"trace flags\") | wc -l'", "equals": "0",
+      "label": "…and that the unreleased feature is in no release" },
+    { "cmd": "sh -c 'sha=$(grep ^commit= ../deployed/BUILDINFO | cut -d= -f2); git show $sha:app.py > /dev/null && echo readable'",
+      "contains": "readable",
+      "label": "the deployed commit is resolvable in the repository" },
+    { "cmd": "git ls-files", "contains": "ci/build.sh",
+      "label": "the stamping is part of the repository, not one runner's config" }
+  ],
+  "pitfalls": [
+    "A version string is not an identity. Re-tagging, hotfixes and rebuilds all break the assumption that v2.1.0 means one specific tree — the sha does not.",
+    "`git archive` exports the tree with no history, which is what you want in an artefact. Shipping the `.git` directory into a container is a common and avoidable mistake.",
+    "`git describe --dirty` in a build script tells you immediately when someone built from an unclean checkout. Treat a `-dirty` artefact as unreleasable.",
+    "`git tag --contains` needs the tags fetched. In a shallow CI clone it silently returns nothing.",
+    "Recording the tree sha as well as the commit lets you detect post-build tampering, which the commit sha alone cannot."
+  ],
+  "cheatsheet": [
+    ["git rev-parse HEAD", "the identity to stamp into a build"],
+    ["git rev-parse HEAD^{tree}", "the content identity, for tamper detection"],
+    ["git describe --tags --always --dirty", "a human-readable version that never fails"],
+    ["git archive --format=tar HEAD", "export the tree without history"],
+    ["git merge-base --is-ancestor <fix> <deployed>", "is this fix live: yes or no"],
+    ["git tag --contains <sha>", "which releases shipped a commit"],
+    ["git show <sha>:<path>", "compare a deployed file against its source"]
+  ]
+}

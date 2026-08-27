@@ -1,0 +1,142 @@
+{
+  "id": "cicd-monorepo-path-filters",
+  "title": "Only build the services that actually changed",
+  "category": "cicd",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "A monorepo CI that rebuilds everything on every push wastes hours a day. Compute the changed paths from git, map them to services, and handle the two cases that break naive implementations.",
+  "concepts": ["diff --name-only", "three-dot range in CI", "merge-base", "shallow clone problems", "shared dependency fan-out"],
+  "mental_model": "'What changed' is `git diff --name-only <base>...<head>`. Everything else — which services to build, which tests to run — is a mapping from those paths. The hard part is choosing the right base, not the diffing.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "services/payments/app.py", "content": "print('payments')\n" } },
+    { "write": { "path": "services/catalog/app.py", "content": "print('catalog')\n" } },
+    { "write": { "path": "services/search/app.py", "content": "print('search')\n" } },
+    { "write": { "path": "libs/common/util.py", "content": "def helper():\n    return True\n" } },
+    { "write": { "path": "docs/architecture.md", "content": "# Architecture\n" } },
+    { "write": { "path": "ci/build.sh", "content": "#!/bin/sh\n# Map changed paths to the services that must be rebuilt.\nbase=\"${1:-origin/main}\"\nchanged=$(git diff --name-only \"$base\"...HEAD)\n\n[ -n \"$changed\" ] || { echo \"nothing changed\"; exit 0; }\n\nservices=\"\"\nfor path in $changed; do\n  case \"$path\" in\n    services/*) svc=$(echo \"$path\" | cut -d/ -f2); services=\"$services $svc\" ;;\n    libs/*)     services=\"$services payments catalog search\" ;;\n    docs/*)     : ;;\n    ci/*)       services=\"$services payments catalog search\" ;;\n  esac\ndone\n\nfor svc in $(echo $services | tr ' ' '\\n' | sort -u); do\n  [ -n \"$svc\" ] && echo \"build: $svc\"\ndone\n" } },
+    { "run": "sh -c 'chmod +x ci/build.sh'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add the monorepo\"" },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "Change one service and ask git what moved",
+      "why": "`diff --name-only` against the base branch is the whole mechanism. Two dots would also include changes made on main since you branched — three dots compares against the merge base, which is what a CI job means by 'what this branch changed'.",
+      "actions": [
+        { "run": "git switch -q -c feature/payments-fix" },
+        { "write": { "path": "services/payments/app.py", "content": "print('payments v2')\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"fix(payments): correct the rounding\"" }
+      ],
+      "commands": ["git diff --name-only origin/main...HEAD", "git merge-base origin/main HEAD", "sh -c 'sh ci/build.sh origin/main'"],
+      "expect": "One changed file, and only the payments service scheduled to build.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/build.sh origin/main'", "equals": "build: payments",
+          "label": "only the changed service is built",
+          "hint": "git diff --name-only origin/main...HEAD, then map paths to services" }
+      ]
+    },
+    {
+      "title": "Prove the three-dot range matters",
+      "why": "Push an unrelated change to main, then compare. The two-dot diff now claims your branch touched the catalog service — which would rebuild it for no reason, on every branch, for the rest of the day.",
+      "actions": [
+        { "run": "git switch -q main" },
+        { "write": { "path": "services/catalog/app.py", "content": "print('catalog v2')\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"feat(catalog): unrelated work on main\"" },
+        { "run": "git push -q origin main" },
+        { "run": "git switch -q feature/payments-fix" },
+        { "run": "git fetch -q origin" }
+      ],
+      "commands": ["git diff --name-only origin/main..HEAD", "git diff --name-only origin/main...HEAD"],
+      "expect": "Two dots mentions catalog; three dots does not.",
+      "verify": [
+        { "cmd": "git diff --name-only origin/main...HEAD", "equals": "services/payments/app.py",
+          "label": "the three-dot range shows only what the branch changed" },
+        { "cmd": "git diff --name-only origin/main..HEAD", "contains": "catalog",
+          "label": "…while the two-dot range wrongly blames the branch for main's work" }
+      ]
+    },
+    {
+      "title": "Docs changes should build nothing",
+      "why": "The mapping is where the value is: paths that cannot affect a build produce no jobs. This is usually the single biggest saving in a monorepo pipeline.",
+      "actions": [
+        { "write": { "path": "docs/architecture.md", "content": "# Architecture\n\nUpdated diagram.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"docs: update the architecture diagram\"" }
+      ],
+      "commands": ["git diff --name-only origin/main...HEAD", "sh -c 'sh ci/build.sh origin/main'"],
+      "expect": "Still only payments — the docs change adds no jobs."
+    },
+    {
+      "title": "A shared library must fan out",
+      "why": "The trap in the other direction. A change under `libs/` affects every consumer, so the mapping must expand it — otherwise CI passes and production breaks in a service nobody rebuilt.",
+      "actions": [
+        { "write": { "path": "libs/common/util.py", "content": "def helper():\n    return 'changed'\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"refactor(common): change the helper return type\"" }
+      ],
+      "commands": ["git diff --name-only origin/main...HEAD", "sh -c 'sh ci/build.sh origin/main'"],
+      "expect": "All three services scheduled, because they all depend on the library.",
+      "verify": [
+        { "cmd": "sh -c 'sh ci/build.sh origin/main | wc -l'", "equals": "3",
+          "label": "a shared library change fans out to every consumer",
+          "hint": "map libs/* to all services, or CI will miss a broken consumer" }
+      ]
+    },
+    {
+      "title": "The failure mode that bites in CI",
+      "why": "In a shallow clone the base commit does not exist, so the diff fails or returns everything. `fetch-depth: 0` — or an explicit `git fetch origin main` — is the fix, and it is the commonest reason path filtering 'randomly' rebuilds the world.",
+      "commands": ["sh -c 'git clone -q --depth 1 \"file://$(cd ../origin.git && pwd)\" ../ci-shallow'", "sh -c 'cd ../ci-shallow && git log --oneline'", "sh -c 'cd ../ci-shallow && git diff --name-only HEAD~1...HEAD 2>&1 | head -2'"],
+      "expect": "The shallow clone cannot reach HEAD~1, so the diff fails outright."
+    },
+    {
+      "title": "Compute the base the way CI should",
+      "why": "Fetch the base branch explicitly and use `merge-base`. This works on a shallow clone once the base is fetched, and it does not depend on any CI platform's variables.",
+      "commands": ["sh -c 'cd ../ci-shallow && git fetch -q --depth 50 origin main && git log --oneline | wc -l'", "sh -c 'cd ../ci-shallow && git merge-base HEAD origin/main | head -c 8'", "sh -c 'cd ../ci-shallow && git diff --name-only $(git merge-base HEAD origin/main)..HEAD | head -3'"],
+      "expect": "A usable base and a correct changed-file list."
+    },
+    {
+      "title": "Wire it into the pipeline",
+      "why": "Commit the mapping script so it is reviewed like any other code, and so the same logic runs locally and in CI. A pipeline whose filtering logic lives only in YAML cannot be tested before pushing.",
+      "actions": [
+        { "run": "git add -A" },
+        { "run": "sh -c 'git commit -q -m \"ci: build only the affected services\" --allow-empty'" }
+      ],
+      "commands": ["sh -c 'sh ci/build.sh origin/main'", "git log --oneline origin/main...HEAD", "git ls-files ci"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "ci/build.sh",
+          "label": "the mapping is committed and testable locally" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git diff --name-only origin/main...HEAD", "not_contains": "catalog",
+      "label": "the branch's changed-file list excludes main's own work",
+      "hint": "use the three-dot range against the base branch" },
+    { "cmd": "sh -c 'sh ci/build.sh origin/main | wc -l'", "equals": "3",
+      "label": "the shared library change correctly fans out to all three services" },
+    { "cmd": "sh -c 'sh ci/build.sh origin/main'", "contains": ["payments", "catalog", "search"],
+      "label": "every consumer of the changed library is scheduled" },
+    { "cmd": "git ls-files", "contains": "ci/build.sh",
+      "label": "the path-to-service mapping lives in the repository" }
+  ],
+  "pitfalls": [
+    "Two dots versus three dots decides whether main's own commits get attributed to your branch. In CI, always three — or an explicit merge-base.",
+    "Shallow clones break path filtering silently: the base is unreachable, the diff errors, and most pipelines fall back to building everything.",
+    "Forgetting to fan out shared-library changes is the dangerous direction: CI goes green and a consumer breaks in production.",
+    "A merge commit's diff against its first parent is not 'what this PR changed'. Use the merge base with the target branch instead.",
+    "Path filters in CI YAML cannot be tested locally. Putting the logic in a committed script means you can run it before you push."
+  ],
+  "cheatsheet": [
+    ["git diff --name-only <base>...HEAD", "what this branch changed"],
+    ["git merge-base HEAD origin/main", "the base commit, computed explicitly"],
+    ["git diff --name-only $(git merge-base HEAD origin/main)..HEAD", "the shallow-clone-safe form"],
+    ["git fetch --depth 50 origin main", "make the base reachable in CI"],
+    ["git log --oneline <base>...HEAD", "the commits behind those changes"],
+    ["fetch-depth: 0", "the CI setting that avoids all of this"]
+  ]
+}
