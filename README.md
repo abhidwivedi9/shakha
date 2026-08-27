@@ -11,9 +11,30 @@ There is no simulation layer anywhere in this project.
 
 ```
 python shakhactl.py dashboard          # http://127.0.0.1:4100
+python shakhactl.py dashboard --share  # ... and from your phone, on the same network
+python shakhactl.py dashboard --share --key   # ... behind a key carried in the link
 ```
 
 Requires Python 3.9+ and git. No pip install, no npm install, no build step.
+
+The dashboard is laid out for a phone as well as a desktop: below 900px the three
+panes become one screen at a time with a tab bar — Scenarios, Lesson, Repo — so the
+graph, the editor and the terminal all stay usable on a small screen. `--share` binds
+every interface and prints the address to open on another device; only do that on a
+network you trust, because whoever opens it can drive the sandboxes and the terminal.
+`--key` closes that hole: the key becomes part of the link, every request without it
+gets a 403, and the first load moves the key into a cookie so it leaves the address
+bar. Use it for anything wider than a LAN you own — including a tunnel to the wider
+internet, where the key is the only thing standing in front of a real shell sandbox.
+
+## Putting it on a public URL
+
+`Dockerfile` builds the whole thing — Python, git, ssh-keygen for the signing scenarios —
+and runs it in `--multi-user` mode, where every browser gets its own sandboxes and its own
+progress instead of sharing one set. Static hosts (Firebase Hosting, GitHub Pages) cannot
+run it: Shakha is a server executing real git, not a bundle of files. See
+[docs/DEPLOY.md](docs/DEPLOY.md) for a free container host, the trade-offs, and how to put
+a key in front of it.
 
 ## What it looks like
 
@@ -43,6 +64,9 @@ repository, so solving a scenario your own way counts exactly the same.
 
 ```
 python shakhactl.py dashboard      # start the dashboard
+python shakhactl.py dashboard --share   # let other devices on your network open it
+python shakhactl.py dashboard --key     # lock it behind a key carried in the link
+python shakhactl.py dashboard --multi-user  # a sandbox set per browser, for shared URLs
 python shakhactl.py list           # every scenario, grouped by category
 python shakhactl.py path           # the ordered learning path, with your progress
 python shakhactl.py start <id>     # build a sandbox on disk

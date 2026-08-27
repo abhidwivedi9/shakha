@@ -39,6 +39,33 @@ const el = (tag, cls, text) => {
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/* ------------------------------------------------------------- panes */
+
+/* On a phone the three panes take turns on one screen, driven by the tab bar.
+   On a desktop they are all visible at once and these calls do nothing. */
+
+const isNarrow = () => window.matchMedia('(max-width: 900px)').matches;
+
+function setPane(name) {
+  document.body.dataset.pane = name;
+  document.querySelectorAll('.tabbtn')
+    .forEach((b) => b.classList.toggle('active', b.dataset.pane === name));
+  if (name === 'repo') flagRepo(false);
+}
+
+/* a dot on the Repo tab when the repository moved while you were looking elsewhere */
+function flagRepo(on) {
+  const btn = document.querySelector('.tabbtn[data-pane="repo"]');
+  if (!btn) return;
+  const dot = btn.querySelector('.flag');
+  if (on && !dot) btn.appendChild(el('span', 'flag'));
+  if (!on && dot) dot.remove();
+}
+
+document.querySelectorAll('.tabbtn').forEach((btn) => {
+  btn.addEventListener('click', () => setPane(btn.dataset.pane));
+});
+
 /* ------------------------------------------------------------- catalog */
 
 async function loadCatalog() {
@@ -284,6 +311,7 @@ async function openScenario(id) {
   state.stepDone = {};
   renderCatalog();
   renderLesson();
+  if (isNarrow()) setPane('lesson');
   $('#term-in').disabled = false;
   clearTerminal();
   if (scenario.ready) {
@@ -539,6 +567,7 @@ async function submitCommand(command) {
 
 function applyState(repoState) {
   state.repo = repoState;
+  if (isNarrow() && document.body.dataset.pane !== 'repo') flagRepo(true);
   const body = $('#repo-body');
   body.innerHTML = '';
 

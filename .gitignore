@@ -7,3 +7,6 @@ progress.json
 __pycache__/
 *.pyc
 .DS_Store
+
+# Per-visitor progress in multi-user mode
+sessions/

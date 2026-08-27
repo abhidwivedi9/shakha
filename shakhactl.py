@@ -2,6 +2,8 @@
 """shakhactl -- the Shakha control CLI.
 
     python shakhactl.py dashboard          start the learning dashboard
+    python shakhactl.py dashboard --share  ... and let your phone open it too
+    python shakhactl.py dashboard --share --key   ... locked behind a key in the link
     python shakhactl.py list               list every scenario
     python shakhactl.py start <id>         build a scenario sandbox on disk
     python shakhactl.py verify <id>        grade the sandbox as it stands
@@ -13,6 +15,7 @@
 from __future__ import annotations
 
 import argparse
+import secrets
 import shutil
 import subprocess
 import sys
@@ -42,7 +45,12 @@ def _need(catalog: Catalog, scenario_id: str):
 
 def cmd_dashboard(args):
     from server.app import serve
-    serve(port=args.port, open_browser=not args.no_open)
+    host = "0.0.0.0" if args.share else args.host
+    key = args.key
+    if key == "":                       # --key with no value: make one up
+        key = secrets.token_urlsafe(12)
+    serve(port=args.port, open_browser=not args.no_open, host=host, key=key,
+          sessions=args.multi_user)
 
 
 def cmd_list(args):
@@ -164,6 +172,18 @@ def main():
     dash = subparsers.add_parser("dashboard", help="start the learning dashboard")
     dash.add_argument("--port", type=int, default=4100)
     dash.add_argument("--no-open", action="store_true", help="do not open a browser")
+    dash.add_argument("--share", action="store_true",
+                      help="bind every interface so a phone or another laptop on the "
+                           "same network can open the dashboard (trusted networks only)")
+    dash.add_argument("--host", default="127.0.0.1",
+                      help="address to bind (default: this machine only)")
+    dash.add_argument("--multi-user", action="store_true",
+                      help="give every browser its own sandboxes and progress, keyed by "
+                           "a cookie -- required if strangers will share the URL")
+    dash.add_argument("--key", nargs="?", const="", default=None, metavar="KEY",
+                      help="lock the dashboard behind a key carried in the link; give a "
+                           "value or pass --key alone to generate one. Required in "
+                           "practice for anything wider than a trusted LAN")
     dash.set_defaults(func=cmd_dashboard)
 
     subparsers.add_parser("list", help="list scenarios").set_defaults(func=cmd_list)

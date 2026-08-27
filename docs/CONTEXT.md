@@ -26,13 +26,41 @@ buttons were pressed. **There is no simulation layer anywhere in the project.**
 
 ```bash
 cd C:\Users\swarn\project-shakha
-python shakhactl.py dashboard        # http://127.0.0.1:4100
+python shakhactl.py dashboard          # http://127.0.0.1:4100
+python shakhactl.py dashboard --share  # bind every interface; prints the LAN address
+python shakhactl.py dashboard --share --key    # ... and gate it behind a key
 ```
+
+`--share` (or `--host <addr>`) is the only way the server leaves loopback — the default
+is still 127.0.0.1. It prints every address the machine can be reached on, and a warning:
+anyone who can open the page can drive the sandboxes and the allow-listed terminal.
+
+`--key [VALUE]` (generated when the value is omitted) gates **every** request — pages,
+static assets and API alike. The key arrives as `?k=`, a query param, a `shakha_key`
+cookie or an `X-Shakha-Key` header; a page load carrying `?k=` answers 302 and moves it
+into the cookie, so the address bar goes clean. Comparison is `hmac.compare_digest`.
+Treat the key as the only thing between the internet and a shell sandbox.
+
+`--multi-user` makes Shakha safe to *share*, which is a different problem from `--key`.
+Without it every visitor collides in `workspaces/<scenario-id>` and one global
+`progress.json`. With it, a `shakha_session` cookie (16 hex chars, validated before it
+is ever used as a directory name) routes each browser to `workspaces/<session>/…` and
+`sessions/<session>.json`, and a reaper thread deletes sessions idle for 24h. Local
+single-user mode is untouched and still uses the original paths.
+
+`Dockerfile` + `docs/DEPLOY.md` cover hosting it publicly. Note the image must carry
+`openssh-client` (the signing scenarios cut real signed tags) and that Debian's git is
+older than the Windows one — see the gotchas below.
+
+The web UI is responsive. Below 900px `body[data-pane]` shows one pane at a time and a
+tab bar switches between them; opening a scenario jumps to the Lesson pane, and the Repo
+tab grows a dot when the repository moves while you are looking elsewhere. Above 900px
+nothing changed — same three-column grid, tab bar hidden.
 
 Requires only **Python 3.9+ and git**. No pip install, no npm, no build step.
 
 CLI: `dashboard` · `list` · `path` · `start <id>` · `verify <id>` · `reset <id>` ·
-`clean` · `doctor`
+`clean` · `doctor`  (`dashboard` takes `--port`, `--no-open`, `--share`, `--host`, `--key`, `--multi-user`)
 
 The running server caches the catalog in memory. After adding or editing scenarios:
 
@@ -87,9 +115,11 @@ scenarios/<ID>/     scenario.json (+ optional explain.md, unused so far)
 curriculum.json     the 6-stage ordered learning path
 tools/
   test_scenarios.py the regression suite
-docs/               AUTHORING.md, CONTEXT.md
+docs/               AUTHORING.md, CONTEXT.md, DEPLOY.md
 .github/workflows/  scenarios.yml (CI)
+Dockerfile          the public deployment image (multi-user)
 workspaces/         disposable sandboxes — gitignored
+sessions/           per-visitor progress, multi-user only — gitignored
 progress.json       local progress — gitignored
 ```
 
@@ -162,6 +192,12 @@ solve it is a broken scenario.
 - Identical file contents break **rename detection** → give setup files distinct content.
 - `core.fsmonitor true` starts a daemon that **holds file handles** → stop it, and the
   sandbox teardown retries on locks.
+- Two scenarios are **environment-sensitive**, and fail in the Linux container while
+  passing on Windows: `incidents-everything-looks-modified` depends on `core.fileMode`
+  defaulting false (it is true on Linux, so the mode bits really do differ), and
+  `rebase-conflict-recovery` depends on git >= 2.5x dropping a conflict-emptied commit
+  — Debian trixie ships 2.47, which skips the commit up front instead. 125/127 pass in
+  the container.
 - The **catalog is cached in the running server** — reload or restart after edits.
 
 ## Done

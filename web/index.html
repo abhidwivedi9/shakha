@@ -2,11 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#161b22">
+<meta name="mobile-web-app-capable" content="yes">
 <title>Shakha — learn git by doing it</title>
 <link rel="stylesheet" href="/style.css">
 </head>
-<body>
+<body data-pane="catalog">
 
 <header class="topbar">
   <div class="brand">
@@ -16,7 +19,7 @@
   </div>
   <div class="topbar-right">
     <input id="search" type="search" placeholder="Search scenarios…  (/)" autocomplete="off">
-    <button id="next-unsolved" class="ghost" title="Jump to the next scenario you have not solved (n)">Next unsolved</button>
+    <button id="next-unsolved" class="ghost" title="Jump to the next scenario you have not solved (n)"><span class="wide">Next unsolved</span><span class="narrow">Next</span></button>
     <button id="show-cheatsheet" class="ghost" title="Every command from the scenarios you have solved (c)">Cheatsheet</button>
     <div class="progress-pill"><span id="progress-count">0</span> solved</div>
   </div>
@@ -75,6 +78,12 @@
   </aside>
 
 </main>
+
+<nav class="tabbar" id="tabbar">
+  <button class="tabbtn active" data-pane="catalog">Scenarios</button>
+  <button class="tabbtn" data-pane="lesson">Lesson</button>
+  <button class="tabbtn" data-pane="repo">Repo</button>
+</nav>
 
 <script src="/app.js"></script>
 </body>

@@ -344,3 +344,102 @@ table.cheat td:last-child { color: var(--ink-dim); }
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { background: #2c3542; border-radius: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------------------------------------------------- mobile */
+
+/* The tab bar exists only on narrow screens; on a desktop the three panes
+   are all visible at once and there is nothing to switch between. */
+.tabbar { display: none; }
+.narrow { display: none; }
+
+@media (max-width: 900px) {
+
+  /* an app shell: topbar, one pane, tab bar -- and only the pane scrolls */
+  body {
+    display: flex; flex-direction: column;
+    height: 100vh; height: 100dvh;
+    overflow: hidden;
+  }
+
+  .topbar {
+    flex: 0 0 auto; height: auto; flex-wrap: wrap;
+    gap: 8px; padding: 8px 12px;
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+  /* dissolve the wrapper so its children wrap as rows of the topbar itself */
+  .topbar-right { display: contents; }
+  .brand { order: 1; flex: 1 1 auto; }
+  .brand small { display: none; }
+  .progress-pill { order: 2; }
+  #search {
+    order: 3; flex: 1 1 130px; width: auto; min-width: 0;
+    font-size: 16px;   /* under 16px iOS zooms the whole page on focus */
+  }
+  #next-unsolved { order: 4; }
+  #show-cheatsheet { order: 5; }
+  #next-unsolved, #show-cheatsheet { padding: 8px 11px; font-size: 12px; white-space: nowrap; }
+  .wide { display: none; }
+  .narrow { display: inline; }
+
+  .layout {
+    flex: 1 1 auto; min-height: 0;
+    grid-template-columns: 1fr; height: auto;
+  }
+  .pane { display: none; }
+  body[data-pane="catalog"] #catalog,
+  body[data-pane="lesson"]  #lesson,
+  body[data-pane="repo"]    #repo { display: flex; }
+  .catalog { border-right: none; }
+  .repo { border-left: none; }
+
+  .tabbar {
+    display: flex; flex: 0 0 auto;
+    border-top: 1px solid var(--line); background: var(--panel);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tabbtn {
+    flex: 1; min-height: 48px; border: none; border-radius: 0;
+    background: transparent; color: var(--ink-dim); font-size: 12.5px;
+  }
+  .tabbtn.active { color: var(--accent); box-shadow: inset 0 2px 0 var(--accent); }
+  .tabbtn:hover:not(:disabled) { color: var(--accent); }
+  .tabbtn .flag {
+    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--amber); margin-left: 5px; vertical-align: middle;
+  }
+
+  /* fingers, not a mouse pointer: everything tappable gets more room */
+  .cat-head { padding: 12px 14px; }
+  .cat-item { padding: 12px 14px 12px 22px; }
+  .cat-item .title { font-size: 14px; }
+  .filters { gap: 6px; }
+  .filter { padding: 6px 11px; font-size: 12px; }
+  .viewbtn { padding: 8px; font-size: 12.5px; }
+
+  .lesson-inner { padding: 18px 16px 40px; max-width: none; }
+  .empty-state { padding: 34px 18px; }
+  .lesson h1 { font-size: 20px; }
+  .toolbar button { flex: 1 1 40%; padding: 10px 12px; }
+  .step-head { padding: 13px 12px; }
+  .step-body { padding: 0 12px 14px; }
+  .cmd-row { align-items: stretch; }
+  code.cmd { white-space: pre-wrap; word-break: break-word; flex: 1 1 100%; }
+  table.cheat td:first-child { width: 42%; white-space: normal; }
+
+  .repo-body { overflow-x: hidden; }
+  .terminal { max-height: 50%; }
+  .terminal-out { min-height: 90px; }
+  #term-in { font-size: 16px; }
+
+  .overlay { padding: 10px; }
+  .editor { max-height: 86vh; max-height: 86dvh; }
+  .editor-head, .editor-foot { flex-wrap: wrap; gap: 8px; }
+  .editor-area { min-height: 180px; font-size: 16px; }
+}
+
+@media (max-width: 480px) {
+  /* three columns of filenames stop being readable around here */
+  .areas { grid-template-columns: 1fr; }
+  .area { min-height: 0; }
+}

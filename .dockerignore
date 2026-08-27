@@ -1,0 +1,11 @@
+# Learner sandboxes and progress are per-machine and per-visitor; never bake them in.
+workspaces/
+sessions/
+progress.json
+
+.git/
+.github/
+__pycache__/
+*.pyc
+.DS_Store
+docs/
