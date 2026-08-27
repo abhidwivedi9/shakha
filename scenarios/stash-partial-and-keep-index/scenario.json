@@ -1,0 +1,109 @@
+{
+  "id": "stash-partial-and-keep-index",
+  "title": "Test what you staged, not what is on disk",
+  "category": "stash",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "You staged a subset of your changes for a clean commit. Before committing, run the tests against exactly that subset — with stash --keep-index — and stash only selected hunks.",
+  "concepts": ["stash --keep-index", "stash --staged", "stash -p", "verifying a commit before making it", "pathspec stashing"],
+  "mental_model": "`--keep-index` stashes everything but leaves the index applied to your working tree. What is on disk then equals exactly what your next commit will contain — so a test run is a test of the commit, not of your desk.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "write": { "path": "test_dosing.py", "content": "from dosing import dose\n\n\ndef check():\n    assert dose(2) == 2.7\n    return 'ok'\n\n\nprint(check())\n" } },
+    { "commit": { "message": "Add dosing and its test" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.35\n" } },
+    { "write": { "path": "debug.py", "content": "print('SCRATCH DEBUGGING — must not be committed')\n" } },
+    { "write": { "path": "test_dosing.py", "content": "from dosing import dose\n\n\ndef check():\n    assert dose(2) == 2.7\n    return 'ok'\n\n\nprint(check())\nprint('local scratch assertion')\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Stage the part you intend to ship",
+      "why": "The validation fix belongs in the commit. The debug file and the scratch line in the test do not. Staging is easy — the hard part is being sure the staged set actually works on its own.",
+      "actions": [ { "run": "git add dosing.py" } ],
+      "commands": ["git status --short", "git diff --staged --stat", "git diff --stat"],
+      "expect": "dosing.py staged; test_dosing.py modified and debug.py untracked, both unstaged."
+    },
+    {
+      "title": "The trap: running tests proves nothing",
+      "why": "Running anything now tests your working tree, which contains scratch edits that are not going into the commit. Plenty of broken commits pass local tests for exactly this reason.",
+      "commands": ["cat test_dosing.py", "ls"],
+      "expect": "The scratch line and debug.py are present — they would be part of any test run."
+    },
+    {
+      "title": "Stash everything except the index",
+      "why": "`--keep-index` parks the unstaged and untracked changes, then restores the staged state onto your working tree. Disk now equals the future commit exactly.",
+      "commands": ["git stash push -u --keep-index -m \"scratch: debug and local test line\"", "git status --short", "ls", "cat test_dosing.py"],
+      "expect": "debug.py gone, test file back to its committed version, dosing.py still holding the staged fix.",
+      "verify": [
+        { "cmd": "cat test_dosing.py", "not_contains": "local scratch assertion",
+          "label": "scratch edits are parked", "hint": "git stash push -u --keep-index" },
+        { "cmd": "cat dosing.py", "contains": "positive only",
+          "label": "…while the staged change stays on disk" },
+        { "cmd": "ls", "not_contains": "debug.py", "label": "the debug file is parked too" }
+      ]
+    },
+    {
+      "title": "Now the test run means something",
+      "why": "What you run here is precisely what CI will run after your commit lands. This one habit catches the entire class of 'works on my machine' commits.",
+      "commands": ["cat dosing.py", "git diff --staged", "git status --short"],
+      "expect": "Only the intended change, nothing else in sight."
+    },
+    {
+      "title": "Commit with confidence, then restore your desk",
+      "why": "Commit the verified set, then pop the stash to get your scratch work back. Two commands, and the commit is provably self-contained.",
+      "commands": ["git commit -m \"Reject non-positive doses\"", "git stash pop", "git status --short", "ls"],
+      "expect": "The commit contains one file; your debug file and scratch line come back.",
+      "verify": [
+        { "cmd": "git show --stat HEAD", "not_contains": "debug.py",
+          "label": "the commit is clean" },
+        { "cmd": "ls", "contains": "debug.py", "label": "and your scratch work is back" }
+      ]
+    },
+    {
+      "title": "Stash only some paths",
+      "why": "`git stash push -- <path>` parks specific files and leaves the rest alone. Simpler than hunks when the split happens to fall on file boundaries.",
+      "commands": ["git stash push -u -m \"just the debug file\" -- debug.py", "git status --short", "ls", "git stash list"],
+      "expect": "debug.py parked; the test file's scratch line still in the working tree.",
+      "verify": [
+        { "cmd": "ls", "not_contains": "debug.py", "label": "a single path was stashed" },
+        { "cmd": "cat test_dosing.py", "contains": "local scratch assertion",
+          "label": "…and the other change was left alone" }
+      ]
+    },
+    {
+      "title": "Clean up",
+      "why": "`git stash clear` deletes every entry. It is the one stash command with no undo, so read `git stash list` before running it.",
+      "commands": ["git stash list", "git stash drop", "git checkout -- test_dosing.py", "git status --short", "git stash list"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "clean tree, no stashes left" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show --stat HEAD", "contains": "dosing.py",
+      "label": "the commit contains the validation fix",
+      "hint": "stage dosing.py, stash the rest with --keep-index, then commit" },
+    { "cmd": "git show --stat HEAD", "not_contains": ["debug.py", "test_dosing.py"],
+      "label": "…and nothing else — no scratch file, no scratch test line" },
+    { "cmd": "git show HEAD:dosing.py", "contains": "positive only",
+      "label": "the committed code is the validated version" },
+    { "cmd": "git stash list", "empty": true, "label": "no stash entries left dangling" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean working tree" }
+  ],
+  "pitfalls": [
+    "`--keep-index` without `-u` leaves untracked files in place, which defeats the purpose — a stray new module still pollutes the test run.",
+    "If the tests fail during a `--keep-index` run, the fix is to amend the index and try again. Do not pop first, or you lose the isolation.",
+    "`git stash push -p` walks hunks interactively, the same picker as `git add -p`.",
+    "`git stash --staged` (git 2.35+) does the inverse: it stashes the staged changes and leaves your working tree alone."
+  ],
+  "cheatsheet": [
+    ["git stash push -u --keep-index", "park everything but leave the staged state on disk"],
+    ["git stash push -u -- <path>", "park specific paths only"],
+    ["git stash push -p", "choose hunks to park"],
+    ["git stash --staged", "park what is staged, keep the rest"],
+    ["git diff --staged", "confirm what the commit will contain"],
+    ["git stash pop", "restore your desk afterwards"]
+  ]
+}

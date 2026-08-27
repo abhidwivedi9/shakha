@@ -1,0 +1,118 @@
+{
+  "id": "tags-moving-and-retagging",
+  "title": "Never move a tag that has been published",
+  "category": "tags",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "You tagged the wrong commit and pushed. Moving the tag is possible, and it quietly leaves every colleague pointing at different code under the same name. See it happen, then do it properly.",
+  "concepts": ["tag -f", "push --force for tags", "stale tags in clones", "fetch --prune-tags", "patch releases instead of retagging"],
+  "mental_model": "A tag is a promise that a name always means one commit. Moving it breaks that promise silently: clones keep the old target and nothing warns anybody, because git never overwrites an existing tag on fetch.",
+  "danger": "Retagging is one of the few git operations with no local signal that anything is wrong. Two machines can build 'v2.0.0' and get different binaries.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = '2.0.0'\nBROKEN = True\n" } },
+    { "commit": { "message": "Release 2.0.0 (with a bug)" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git tag -a v2.0.0 -m \"Release 2.0.0\"" },
+    { "run": "git push -q origin v2.0.0" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "run": "git fetch -q --tags origin" },
+    { "write": { "path": "app.py", "content": "VERSION = '2.0.0'\nBROKEN = False\n" } },
+    { "commit": { "message": "Fix the bug that shipped in 2.0.0" } },
+    { "run": "git push -q origin main" }
+  ],
+  "steps": [
+    {
+      "title": "See what everyone currently agrees on",
+      "why": "You, the server and your colleague all have v2.0.0 pointing at the buggy commit. That agreement is the only thing that makes a tag useful.",
+      "commands": ["git rev-parse v2.0.0", "git ls-remote --tags origin", "git log --oneline --decorate"],
+      "expect": "One sha, agreed everywhere."
+    },
+    {
+      "title": "Move the tag onto the fix",
+      "why": "`-f` overwrites the tag locally. It feels like the obvious fix: the release should have included the bug fix, so point the name at the fixed commit.",
+      "commands": ["git tag -f -a v2.0.0 -m \"Release 2.0.0 (retagged with fix)\"", "git rev-parse v2.0.0", "git log --oneline --decorate -2"],
+      "expect": "The tag now points at the newer commit.",
+      "verify": [
+        { "cmd": "git log -1 --format=%s v2.0.0", "contains": "Fix the bug",
+          "label": "the tag now points at the fixed commit",
+          "hint": "git tag -f -a v2.0.0 -m \"...\" (note: rev-parse on an annotated tag gives the tag object's sha, not the commit's — use v2.0.0^{} for that)" }
+      ]
+    },
+    {
+      "title": "Publishing it needs force too",
+      "why": "The server refuses a normal push of an existing tag — that refusal is git protecting the promise. Forcing overrides it.",
+      "commands": ["git push origin v2.0.0", "git push --force origin v2.0.0", "git ls-remote --tags origin"],
+      "expect": "Rejected first, accepted with --force."
+    },
+    {
+      "title": "Now look at the colleague's clone",
+      "why": "Here is the damage. They fetch, git sees they already have a tag called v2.0.0, and leaves it alone. They are still on the buggy commit and nothing tells them.",
+      "cwd": "teammate",
+      "commands": ["git fetch --tags origin", "git rev-parse v2.0.0", "git log --oneline -1 v2.0.0", "git show v2.0.0:app.py"],
+      "expect": "BROKEN = True — the old code, under the new release name.",
+      "verify": [
+        { "cmd": "git show v2.0.0:app.py", "cwd": "teammate", "contains": "BROKEN = True",
+          "label": "the colleague's v2.0.0 still points at the buggy commit" }
+      ]
+    },
+    {
+      "title": "The only way they find out",
+      "why": "`--force` on fetch, or `--prune-tags`, overwrites local tags. Nobody runs these by habit — which is exactly why retagging is unsafe rather than merely inconvenient.",
+      "cwd": "teammate",
+      "commands": ["git fetch --tags --force origin", "git rev-parse v2.0.0", "git show v2.0.0:app.py"],
+      "expect": "Now they get the fixed commit — but only because they knew to force.",
+      "verify": [
+        { "cmd": "git show v2.0.0:app.py", "cwd": "teammate", "contains": "BROKEN = False",
+          "label": "a forced fetch finally updated their tag" }
+      ]
+    },
+    {
+      "title": "Do it the honest way instead",
+      "why": "Cut a new version. v2.0.1 is unambiguous, every clone gets it with a normal fetch, and the history of what shipped when stays true.",
+      "commands": ["git tag -a v2.0.1 -m \"Release 2.0.1 — fixes the 2.0.0 bug\"", "git push origin v2.0.1", "git tag -n", "git ls-remote --tags origin"],
+      "cwd": "repo",
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "contains": "v2.0.1",
+          "label": "a new patch release was published instead",
+          "hint": "git tag -a v2.0.1 && git push origin v2.0.1" }
+      ]
+    },
+    {
+      "title": "Confirm the patch release needs no force anywhere",
+      "why": "The colleague fetches normally and gets v2.0.1, because the name is new. No force, no coordination, no chance of two machines disagreeing.",
+      "cwd": "teammate",
+      "commands": ["git fetch --tags origin", "git tag", "git show v2.0.1:app.py"],
+      "verify": [
+        { "cmd": "git tag", "cwd": "teammate", "contains": "v2.0.1",
+          "label": "the new tag arrived with an ordinary fetch" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-remote --tags origin", "contains": ["v2.0.0", "v2.0.1"],
+      "label": "the fix shipped as a new patch release",
+      "hint": "cut v2.0.1 rather than relying on the retag" },
+    { "cmd": "git tag", "cwd": "teammate", "contains": "v2.0.1",
+      "label": "the colleague received it with a plain fetch" },
+    { "cmd": "git show v2.0.1:app.py", "cwd": "teammate", "contains": "BROKEN = False",
+      "label": "and it contains the fixed code" },
+    { "cmd": "git cat-file -t v2.0.1", "equals": "tag",
+      "label": "the patch release is annotated" }
+  ],
+  "pitfalls": [
+    "`git fetch --tags` does NOT update a tag that already exists locally. Moving a published tag therefore fails silently for everyone who already had it.",
+    "Docker images, package registries and CI caches keyed on a tag name will keep serving the old artefact after a retag.",
+    "If you truly must retag, tell everyone to run `git fetch --tags --force` — and expect several of them not to.",
+    "Deleting and recreating a tag is the same operation with the same consequences. The problem is the name reuse, not the flag."
+  ],
+  "cheatsheet": [
+    ["git tag -f -a <name> -m \"...\"", "move a tag locally — think first"],
+    ["git push --force origin <tag>", "publish the move"],
+    ["git fetch --tags --force", "the only way clones pick up a moved tag"],
+    ["git fetch --prune-tags", "also drop tags deleted on the server"],
+    ["git tag -a v2.0.1 -m \"...\"", "the honest alternative: a new version"],
+    ["git ls-remote --tags origin", "what the server really has"]
+  ]
+}

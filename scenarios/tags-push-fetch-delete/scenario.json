@@ -1,0 +1,131 @@
+{
+  "id": "tags-push-fetch-delete",
+  "title": "Your tag is not on the server (git push does not push tags)",
+  "category": "tags",
+  "level": "beginner",
+  "order": 2,
+  "duration_min": 12,
+  "summary": "You tagged the release and pushed. CI never fired, because tags do not travel with a normal push. Learn the three ways to publish them and how to delete one that went out wrong.",
+  "concepts": ["push <tag>", "push --tags", "push --follow-tags", "deleting remote tags", "fetch --tags"],
+  "mental_model": "`git push` publishes branches. Tags are a separate namespace and need to be named explicitly, or swept up with `--tags` or `--follow-tags`. Nothing about tagging is automatic.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = '1.0.0'\n" } },
+    { "commit": { "message": "Release 1.0.0" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true },
+    { "run": "git tag -a v1.0.0 -m \"Release 1.0.0\"" },
+    { "write": { "path": "app.py", "content": "VERSION = '1.1.0'\n" } },
+    { "commit": { "message": "Release 1.1.0" } },
+    { "run": "git tag -a v1.1.0 -m \"Release 1.1.0\"" },
+    { "run": "git tag broken-release" }
+  ],
+  "steps": [
+    {
+      "title": "Push the branch and check the server",
+      "why": "The commits arrive. The tags do not. This is the moment a release pipeline that triggers on tags silently does nothing at all.",
+      "commands": ["git push origin main", "git tag", "git ls-remote --tags origin"],
+      "expect": "Local tags listed; the remote tag listing is empty.",
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "empty": true,
+          "label": "a normal push published no tags" }
+      ]
+    },
+    {
+      "title": "Push one tag by name",
+      "why": "Naming the tag pushes exactly that tag. This is the safest form — you publish what you meant to publish and nothing else.",
+      "commands": ["git push origin v1.0.0", "git ls-remote --tags origin"],
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "contains": "v1.0.0",
+          "label": "the named tag reached the server",
+          "hint": "git push origin v1.0.0" }
+      ]
+    },
+    {
+      "title": "Push every tag you have",
+      "why": "`--tags` sweeps up all of them, including local scratch tags you never meant to share. Convenient, and the usual reason repositories accumulate tags called `test` and `tmp`.",
+      "commands": ["git push origin --tags", "git ls-remote --tags origin"],
+      "expect": "v1.1.0 and broken-release both published — the second one by accident.",
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "contains": ["v1.1.0", "broken-release"],
+          "label": "--tags published everything, wanted or not" }
+      ]
+    },
+    {
+      "title": "Delete the tag that should not have gone out",
+      "why": "Same refspec logic as branches: `--delete` removes it from the server. Your local copy is untouched, so you must delete both.",
+      "commands": ["git push origin --delete broken-release", "git tag -d broken-release", "git ls-remote --tags origin", "git tag"],
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "not_contains": "broken-release",
+          "label": "the accidental tag is gone from the server",
+          "hint": "git push origin --delete broken-release" },
+        { "cmd": "git tag", "not_contains": "broken-release",
+          "label": "…and locally too — they are separate deletions" }
+      ]
+    },
+    {
+      "title": "The flag worth defaulting to",
+      "why": "`--follow-tags` pushes annotated tags that point at commits you are pushing anyway. It publishes release tags without sweeping up local junk — the sensible middle ground.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "VERSION = '1.2.0'\n" } },
+        { "run": "git commit -q -a -m \"Release 1.2.0\"" },
+        { "run": "git tag -a v1.2.0 -m \"Release 1.2.0\"" },
+        { "run": "git tag scratch-note" }
+      ],
+      "commands": ["git push --follow-tags origin main", "git ls-remote --tags origin"],
+      "expect": "v1.2.0 published; the lightweight scratch-note is not.",
+      "verify": [
+        { "cmd": "git ls-remote --tags origin", "contains": "v1.2.0",
+          "label": "--follow-tags published the annotated release tag" },
+        { "cmd": "git ls-remote --tags origin", "not_contains": "scratch-note",
+          "label": "…and skipped the lightweight scratch tag",
+          "hint": "--follow-tags only pushes annotated tags" }
+      ]
+    },
+    {
+      "title": "See it from a colleague's clone",
+      "why": "Tags arrive on fetch. A clone made before the tags existed sees them only after fetching — and `--tags` fetches tags even from commits not on any branch you track.",
+      "cwd": "teammate",
+      "commands": ["git tag", "git fetch --tags origin", "git tag", "git log --oneline --decorate --all -3"],
+      "expect": "No tags at first, then all the published ones."
+    },
+    {
+      "title": "Make it a habit",
+      "why": "`push.followTags true` applies the middle-ground behaviour to every push. Release tags publish themselves; scratch tags stay on your machine.",
+      "commands": ["git config --global push.followTags true", "git config --global --get push.followTags"],
+      "cwd": "repo",
+      "verify": [
+        { "cmd": "git config --global --get push.followTags", "equals": "true",
+          "label": "annotated tags now publish automatically",
+          "hint": "git config --global push.followTags true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-remote --tags origin", "contains": ["v1.0.0", "v1.1.0", "v1.2.0"],
+      "label": "all three release tags are on the server",
+      "hint": "git push origin <tag>, --tags, or --follow-tags" },
+    { "cmd": "git ls-remote --tags origin", "not_contains": ["broken-release", "scratch-note"],
+      "label": "no junk tags were published",
+      "hint": "delete the accidental one with git push origin --delete" },
+    { "cmd": "git tag", "cwd": "teammate", "contains": "v1.2.0",
+      "label": "the colleague's clone received the tags after fetching" },
+    { "cmd": "git config --global --get push.followTags", "equals": "true",
+      "label": "push.followTags is configured" }
+  ],
+  "pitfalls": [
+    "A CI pipeline triggered by tags will not run if you forget to push the tag. The commit arriving is not the trigger.",
+    "`git push --tags` publishes every local tag, including experiments. Prefer `--follow-tags` or naming the tag.",
+    "Deleting a remote tag does not delete anyone's local copy. Colleagues who already fetched keep it until they prune tags explicitly.",
+    "`git fetch` does fetch tags reachable from fetched branches, but `--tags` is needed for the rest. `git fetch --prune --prune-tags` cleans up deleted ones."
+  ],
+  "cheatsheet": [
+    ["git push origin <tag>", "publish one tag"],
+    ["git push origin --tags", "publish all local tags"],
+    ["git push --follow-tags", "publish annotated tags for pushed commits"],
+    ["git push origin --delete <tag>", "delete a tag on the server"],
+    ["git tag -d <tag>", "delete it locally too"],
+    ["git ls-remote --tags origin", "what the server actually has"],
+    ["git fetch --tags --prune-tags", "sync tags in both directions"]
+  ]
+}

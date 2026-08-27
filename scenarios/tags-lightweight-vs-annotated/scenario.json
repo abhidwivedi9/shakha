@@ -1,0 +1,107 @@
+{
+  "id": "tags-lightweight-vs-annotated",
+  "title": "Two kinds of tag, and why releases need the heavier one",
+  "category": "tags",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 10,
+  "summary": "A lightweight tag is a file containing a sha. An annotated tag is a real object with an author, a date and a message. Create both, look inside them, and see why only one belongs on a release.",
+  "concepts": ["tag -a", "lightweight tags", "tag objects", "cat-file -t", "tag -n"],
+  "mental_model": "A lightweight tag is a branch that never moves. An annotated tag is an object in its own right — it has its own sha, points at the commit, and records who tagged it and why. Releases want the second.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = '1.0.0'\n" } },
+    { "commit": { "message": "Release 1.0.0" } },
+    { "write": { "path": "app.py", "content": "VERSION = '1.1.0'\n" } },
+    { "commit": { "message": "Release 1.1.0" } }
+  ],
+  "steps": [
+    {
+      "title": "Make a lightweight tag",
+      "why": "No flags: git just writes a file under `refs/tags` containing the commit sha. It is exactly as much machinery as a branch, minus the ability to move.",
+      "commands": ["git tag quick-mark", "git tag", "cat .git/refs/tags/quick-mark", "git rev-parse HEAD"],
+      "expect": "The file's content is the commit sha, character for character."
+    },
+    {
+      "title": "Make an annotated tag",
+      "why": "`-a` with a message creates a tag *object*: tagger, date, message, and a pointer to the commit. `git tag -n` shows the messages, which is what makes a tag list readable months later.",
+      "commands": ["git tag -a v1.1.0 -m \"Release 1.1.0 — adds dosing calibration\"", "git tag", "git tag -n"],
+      "verify": [
+        { "cmd": "git tag", "contains": ["quick-mark", "v1.1.0"], "label": "both tags exist" }
+      ]
+    },
+    {
+      "title": "Prove they are different kinds of thing",
+      "why": "`cat-file -t` reports the object type each tag name resolves to. The lightweight one is a commit; the annotated one is a tag object that in turn points at the commit.",
+      "commands": ["git cat-file -t quick-mark", "git cat-file -t v1.1.0", "git cat-file -p v1.1.0"],
+      "expect": "commit, then tag, then the tag object's contents with a tagger line.",
+      "verify": [
+        { "cmd": "git cat-file -t v1.1.0", "equals": "tag",
+          "label": "the annotated tag is its own object",
+          "hint": "git tag -a v1.1.0 -m \"...\"" },
+        { "cmd": "git cat-file -t quick-mark", "equals": "commit",
+          "label": "the lightweight tag resolves straight to the commit" }
+      ]
+    },
+    {
+      "title": "See who tagged and when",
+      "why": "The tagger identity and date live in the tag object. For an audit trail — 'who cut this release, on what day' — a lightweight tag records nothing at all.",
+      "commands": ["git show v1.1.0 --stat", "git for-each-ref --format='%(refname:short) %(objecttype) %(taggerdate:short) %(subject)' refs/tags"],
+      "expect": "A tagger date for v1.1.0 and blanks for quick-mark."
+    },
+    {
+      "title": "Tag an older commit",
+      "why": "Tags are not limited to HEAD. Naming a commit retroactively is normal when you realise a release was never tagged — the tag records when you tagged it, the commit records when the code was written.",
+      "commands": ["git tag -a v1.0.0 -m \"Release 1.0.0\" HEAD~1", "git log --oneline --decorate", "git tag -n"],
+      "verify": [
+        { "cmd": "git tag --points-at HEAD~1", "contains": "v1.0.0",
+          "label": "the older commit is tagged",
+          "hint": "git tag -a v1.0.0 -m \"...\" HEAD~1" }
+      ]
+    },
+    {
+      "title": "Sort tags like versions, not like strings",
+      "why": "Alphabetical sorting puts v1.10.0 before v1.9.0. `--sort=v:refname` understands version numbers, which matters the moment your project reaches double digits.",
+      "actions": [
+        { "run": "git tag -a v1.9.0 -m \"Release 1.9.0\" HEAD~1" },
+        { "run": "git tag -a v1.10.0 -m \"Release 1.10.0\"" }
+      ],
+      "commands": ["git tag", "git tag --sort=v:refname", "git tag --sort=-v:refname"],
+      "expect": "Plain sort puts v1.10.0 before v1.9.0; the version sort gets it right."
+    },
+    {
+      "title": "Clean up the throwaway",
+      "why": "`tag -d` deletes locally. Lightweight tags are fine for personal bookmarks, but leaving them in a shared repository confuses release tooling that expects annotated tags.",
+      "commands": ["git tag -d quick-mark", "git tag", "git tag -n"],
+      "verify": [
+        { "cmd": "git tag", "not_contains": "quick-mark", "label": "the lightweight tag is deleted" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git cat-file -t v1.1.0", "equals": "tag",
+      "label": "the release tag is annotated",
+      "hint": "use git tag -a with a message for anything release-related" },
+    { "cmd": "git tag --points-at HEAD~1", "contains": "v1.0.0",
+      "label": "an older commit was tagged retroactively" },
+    { "cmd": "git tag --sort=v:refname", "matches": "v1\\.9\\.0[\\s\\S]*v1\\.10\\.0",
+      "label": "version sorting orders 1.9.0 before 1.10.0" },
+    { "cmd": "git tag", "not_contains": "quick-mark",
+      "label": "the throwaway lightweight tag was removed" }
+  ],
+  "pitfalls": [
+    "`git describe` ignores lightweight tags unless you pass `--tags`. Release tooling built on describe silently skips them.",
+    "A lightweight tag records nothing about who made it. For anything auditable, always `-a`.",
+    "Tag names and branch names share a namespace in practice — a tag called `main` will confuse every command you run.",
+    "`git tag -s` signs a tag with GPG, and `git tag -v` verifies it. Distributions rely on this for release provenance."
+  ],
+  "cheatsheet": [
+    ["git tag <name>", "lightweight: a file holding a sha"],
+    ["git tag -a <name> -m \"...\"", "annotated: a real object with author and message"],
+    ["git tag -a <name> <commit>", "tag a commit other than HEAD"],
+    ["git tag -n", "list tags with their messages"],
+    ["git cat-file -t <tag>", "which kind of tag it is"],
+    ["git tag --sort=v:refname", "version-aware ordering"],
+    ["git tag -d <name>", "delete locally"]
+  ]
+}

@@ -1,0 +1,107 @@
+{
+  "id": "stash-basics",
+  "title": "Park your work, deal with the emergency, come back",
+  "category": "stash",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "A production bug arrives while you are halfway through a feature. Stash the mess, fix the bug, restore the mess — and learn why untracked files need an extra flag.",
+  "concepts": ["stash push", "pop vs apply", "-u untracked", "stash list", "stash as commits"],
+  "mental_model": "A stash is a commit that is not on any branch. `push` makes it and cleans your tree; `pop` applies it and deletes it; `apply` applies it and keeps it. That is the whole model.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add controller" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\nRAMP_SECONDS = 5  # half-finished\n" } },
+    { "write": { "path": "ramp.py", "content": "def ramp(start, end):\n    pass  # not done yet\n" } }
+  ],
+  "steps": [
+    {
+      "title": "The interruption arrives",
+      "why": "One modified file, one brand-new file, neither finished. You cannot commit this and you cannot switch branches carrying it. This is what stash is for.",
+      "commands": ["git status --short", "cat pump.py"]
+    },
+    {
+      "title": "Stash — and notice what stays behind",
+      "why": "By default stash takes tracked modifications only. ramp.py is untracked, so it is left sitting in your working tree, which is rarely what you meant.",
+      "commands": ["git stash push -m \"wip: pump ramping\"", "git status --short", "ls", "git stash list"],
+      "expect": "pump.py is clean again; ramp.py is still there as ??."
+    },
+    {
+      "title": "Do it properly with -u",
+      "why": "`-u` includes untracked files. Now the tree is genuinely clean and the whole piece of work is in one stash entry — which is what you want before switching branches.",
+      "commands": ["git stash pop", "git stash push -u -m \"wip: pump ramping\"", "git status --short", "ls", "git stash list"],
+      "expect": "Working tree completely clean, one stash entry.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true,
+          "label": "the tree is clean, untracked file included",
+          "hint": "git stash push -u" },
+        { "cmd": "git stash list", "lines": 1, "label": "one stash entry holds the work" }
+      ]
+    },
+    {
+      "title": "Fix the bug on a clean tree",
+      "why": "This is the payoff: the emergency fix is made against exactly what is committed, with none of your half-finished work leaking into it.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "print('reef controller v1.0.1')\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Fix version banner\"" }
+      ],
+      "commands": ["git log --oneline", "git status --short"]
+    },
+    {
+      "title": "Bring the work back",
+      "why": "`pop` applies the stash and removes it from the list. Both the modification and the untracked file return, exactly as you left them.",
+      "commands": ["git stash pop", "git status --short", "cat pump.py", "ls", "git stash list"],
+      "expect": "Your half-finished work is back, and the stash list is empty.",
+      "verify": [
+        { "cmd": "cat pump.py", "contains": "RAMP_SECONDS",
+          "label": "the modification came back" },
+        { "cmd": "ls", "contains": "ramp.py", "label": "and so did the untracked file" },
+        { "cmd": "git stash list", "empty": true, "label": "pop removed the entry" }
+      ]
+    },
+    {
+      "title": "apply, when you want to keep the entry",
+      "why": "`apply` leaves the stash in the list — useful when applying the same work to two branches, or when you are not yet sure the restore worked. `drop` removes it when you are.",
+      "commands": ["git stash push -u -m \"wip: pump ramping\"", "git stash apply", "git stash list", "git status --short", "git stash drop", "git stash list"],
+      "expect": "After apply the entry is still listed; after drop it is gone."
+    },
+    {
+      "title": "See that a stash is just commits",
+      "why": "`stash list` is a reflog of the `stash` ref, and each entry is a real commit object with your work in its tree. Nothing exotic — which is why the recovery tricks for commits work on stashes too.",
+      "commands": ["git stash push -u -m \"inspect me\"", "git log --oneline -g stash", "git show --stat stash@{0}", "git stash pop"],
+      "verify": [
+        { "cmd": "git status --porcelain", "not_contains": "??  ",
+          "label": "the work is restored to the working tree" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat pump.py", "contains": "RAMP_SECONDS",
+      "label": "your half-finished modification survived the round trip",
+      "hint": "git stash push -u, then git stash pop" },
+    { "cmd": "ls", "contains": "ramp.py",
+      "label": "the untracked file survived too — that is what -u buys you" },
+    { "cmd": "git stash list", "empty": true,
+      "label": "no stash entries left dangling" },
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "the emergency fix was committed on a clean tree" }
+  ],
+  "pitfalls": [
+    "Without `-u`, untracked files stay behind and end up in the wrong commit on the wrong branch. Make `-u` your default.",
+    "`git stash` with no message gives you 'WIP on main: abc1234'. After three of those you cannot tell them apart — always use `-m`.",
+    "Stashes are not pushed and not shared. A stash you leave for a week is a stash you will not remember.",
+    "`pop` on a conflict leaves the entry in the list, deliberately, so you cannot lose it while resolving."
+  ],
+  "cheatsheet": [
+    ["git stash push -u -m \"note\"", "park everything, including untracked"],
+    ["git stash list", "what is parked"],
+    ["git stash pop", "restore the newest and remove it"],
+    ["git stash apply", "restore but keep the entry"],
+    ["git stash drop", "delete an entry"],
+    ["git stash show -p stash@{0}", "the diff a stash contains"],
+    ["git stash clear", "delete every entry — no undo"]
+  ]
+}

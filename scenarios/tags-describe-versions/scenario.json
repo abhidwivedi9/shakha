@@ -1,0 +1,127 @@
+{
+  "id": "tags-describe-versions",
+  "title": "Turn any commit into a version string",
+  "category": "tags",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "git describe answers 'which release is this build from, and how far past it'. It is how build systems stamp version numbers without a version file to maintain.",
+  "concepts": ["git describe", "--tags", "--dirty", "--always", "describe --contains", "build stamping"],
+  "mental_model": "`describe` walks backwards from a commit until it finds a tag, then reports `<tag>-<commits since>-g<sha>`. Exactly at a tag you get just the tag — which is what makes it a usable version string.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git tag -a v1.0.0 -m \"Release 1.0.0\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "run": "git tag -a v1.1.0 -m \"Release 1.1.0\"" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "commit": { "message": "Add alerts" } },
+    { "write": { "path": "README.md", "content": "# Reef\n" } },
+    { "commit": { "message": "Add readme" } }
+  ],
+  "steps": [
+    {
+      "title": "Describe where you are",
+      "why": "Two commits past v1.1.0. The output reads `v1.1.0-2-g<sha>`: nearest tag, distance, and the abbreviated commit — everything a build stamp needs, generated rather than maintained.",
+      "commands": ["git describe", "git log --oneline --decorate -4"],
+      "expect": "v1.1.0-2-g followed by a short sha.",
+      "verify": [
+        { "cmd": "git describe", "matches": "^v1\\.1\\.0-2-g",
+          "label": "describe reports the nearest tag and the distance" }
+      ]
+    },
+    {
+      "title": "Describe exactly at a tag",
+      "why": "On the tagged commit itself there is no distance and no sha — you get the bare tag. This is what makes `git describe` safe to use directly as a version: release builds get clean numbers.",
+      "commands": ["git describe v1.1.0", "git describe HEAD~2"],
+      "expect": "Just 'v1.1.0'.",
+      "verify": [
+        { "cmd": "git describe v1.1.0", "equals": "v1.1.0",
+          "label": "a tagged commit describes as the bare tag" }
+      ]
+    },
+    {
+      "title": "Include a dirty marker",
+      "why": "`--dirty` appends a suffix when the working tree has uncommitted changes. A build stamped `v1.1.0-2-gabc1234-dirty` tells you immediately it was not built from committed code.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 30.0\n" } }
+      ],
+      "commands": ["git describe --dirty", "git status --short", "git checkout -- alerts.py", "git describe --dirty"],
+      "expect": "-dirty appears, then disappears once the change is discarded."
+    },
+    {
+      "title": "Handle repositories with no tags",
+      "why": "Plain `describe` fails outright when it finds no tag, which breaks builds. `--always` falls back to the bare sha, and `--tags` lets it use lightweight tags too.",
+      "commands": ["git describe --always", "git tag nightly-2026-08-27", "git describe", "git describe --tags"],
+      "expect": "Without --tags the lightweight nightly tag is ignored; with it, it wins.",
+      "verify": [
+        { "cmd": "git describe --tags", "contains": "nightly",
+          "label": "--tags makes lightweight tags visible to describe",
+          "hint": "git tag nightly-... creates a lightweight tag; describe ignores it by default" }
+      ]
+    },
+    {
+      "title": "Ask the opposite question",
+      "why": "`--contains` reports the first tag that comes *after* a commit — 'which release did this fix ship in'. It is the query you run when a customer asks whether a fix is out yet.",
+      "commands": ["git describe --contains HEAD~3", "git describe --contains HEAD~4", "git tag --contains HEAD~3"],
+      "expect": "The pump commit is contained in v1.1.0.",
+      "verify": [
+        { "cmd": "git describe --contains HEAD~3", "contains": "v1.1.0",
+          "label": "you can find which release contains a commit" }
+      ]
+    },
+    {
+      "title": "Restrict which tags count",
+      "why": "`--match` filters by pattern, so release tags win over nightlies. This is how a build script produces `v1.1.0-2-g...` regardless of what other tags exist.",
+      "commands": ["git describe --tags --match 'v[0-9]*'", "git describe --tags --exclude 'nightly-*'"],
+      "verify": [
+        { "cmd": "git describe --tags --match v[0-9]*", "matches": "^v1\\.1\\.0-",
+          "label": "pattern matching ignores the nightly tag",
+          "hint": "git describe --match 'v[0-9]*'" }
+      ]
+    },
+    {
+      "title": "Stamp a build",
+      "why": "One command produces the version, written into a file the application can read. No manual version bumping, no file to forget to update — the tag is the single source of truth.",
+      "actions": [
+        { "run": "sh -c 'git describe --tags --match \"v[0-9]*\" --dirty --always > VERSION'" }
+      ],
+      "commands": ["cat VERSION", "git status --short"],
+      "verify": [
+        { "cmd": "cat VERSION", "matches": "^v1\\.1\\.0-",
+          "label": "the build stamp was generated from the tag" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git describe --tags --match v[0-9]*", "matches": "^v1\\.1\\.0-2-g",
+      "label": "describe produces a version string from the nearest release tag",
+      "hint": "git describe --match 'v[0-9]*' to ignore nightly tags" },
+    { "cmd": "git describe v1.1.0", "equals": "v1.1.0",
+      "label": "a tagged commit gives the bare tag" },
+    { "cmd": "git describe --contains HEAD~3", "contains": "v1.1.0",
+      "label": "--contains answers which release a commit shipped in" },
+    { "cmd": "cat VERSION", "matches": "^v1\\.1\\.0-",
+      "label": "a build stamp file was generated",
+      "hint": "git describe ... > VERSION" }
+  ],
+  "pitfalls": [
+    "`git describe` fails with an error in a repo with no tags. Always pass `--always` in build scripts.",
+    "It ignores lightweight tags unless you pass `--tags`. Half the 'describe does not see my tag' reports are this.",
+    "A shallow clone (CI default on some platforms) may not contain the tag at all. Fetch with `--tags --unshallow` first.",
+    "`--dirty` only notices tracked-file changes. An untracked file does not make the tree dirty by this measure."
+  ],
+  "cheatsheet": [
+    ["git describe", "nearest annotated tag, distance, sha"],
+    ["git describe --tags", "…including lightweight tags"],
+    ["git describe --dirty", "mark builds from an unclean tree"],
+    ["git describe --always", "fall back to a sha when there is no tag"],
+    ["git describe --match 'v[0-9]*'", "only real release tags"],
+    ["git describe --contains <sha>", "which release contains this commit"],
+    ["git tag --contains <sha>", "every tag containing it"]
+  ]
+}

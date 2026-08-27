@@ -1,0 +1,124 @@
+{
+  "id": "stash-conflicts-and-branch",
+  "title": "The stash will not pop: conflicts, and the branch that fixes them",
+  "category": "stash",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "You stashed, then the branch moved underneath you. Popping now conflicts. Resolve it, and learn about `git stash branch`, which sidesteps the problem entirely.",
+  "concepts": ["stash pop conflict", "entry kept on conflict", "git stash branch", "stash's parent commit", "stash show"],
+  "mental_model": "A stash remembers the commit it was made on. Applying it elsewhere is a three-way merge between that base, your stashed work, and wherever you are now — so it conflicts exactly like any merge.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "settings.py", "content": "POOL_SIZE = 5\nTIMEOUT = 30\nRETRIES = 3\n" } },
+    { "commit": { "message": "Add settings" } },
+    { "write": { "path": "settings.py", "content": "POOL_SIZE = 25\nTIMEOUT = 30\nRETRIES = 3\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Stash work, then let the branch move",
+      "why": "You park a pool-size experiment. While it is parked, a colleague's change lands on the same line. The stash still remembers the old base — that mismatch is the conflict waiting to happen.",
+      "actions": [
+        { "run": "git stash push -m \"experiment: bigger pool\"" },
+        { "write": { "path": "settings.py", "content": "POOL_SIZE = 10\nTIMEOUT = 60\nRETRIES = 3\n" } },
+        { "run": "git commit -q -a -m \"Tune pool and timeout after the incident\"" }
+      ],
+      "commands": ["git log --oneline", "git stash list", "cat settings.py"],
+      "expect": "One stash, and a new commit touching the same line."
+    },
+    {
+      "title": "Look at the stash before applying it",
+      "why": "`stash show -p` prints the diff without touching anything. Reading this first tells you whether the parked work is still worth restoring — often, days later, it is not.",
+      "commands": ["git stash show -p stash@{0}", "git stash list --format='%gd %s'"],
+      "expect": "The pool-size change from 5 to 25, against the old base."
+    },
+    {
+      "title": "Pop, and hit the conflict",
+      "why": "Three versions of the same line: base 5, stash 25, current 10. Git cannot choose, so you get markers — the same experience as any merge conflict, because it is one.",
+      "commands": ["git stash pop", "git status --short", "cat settings.py"],
+      "expect": "CONFLICT in settings.py, exit code 1.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "settings.py",
+          "label": "the pop conflicted" }
+      ]
+    },
+    {
+      "title": "Notice the stash was NOT dropped",
+      "why": "On a clean pop the entry is deleted. On a conflicted one git keeps it, deliberately — so a botched resolution cannot cost you the work. This is the safest failure mode in git.",
+      "commands": ["git stash list"],
+      "expect": "The entry is still there.",
+      "verify": [
+        { "cmd": "git stash list", "lines": 1,
+          "label": "the stash survived the failed pop" }
+      ]
+    },
+    {
+      "title": "Resolve and clean up by hand",
+      "why": "Take 25 from the experiment and the new timeout from the commit. Then drop the stash yourself — since pop did not, you must, or it lingers forever.",
+      "actions": [
+        { "write": { "path": "settings.py", "content": "POOL_SIZE = 25\nTIMEOUT = 60\nRETRIES = 3\n" } },
+        { "run": "git add settings.py" },
+        { "run": "git stash drop" }
+      ],
+      "commands": ["git status --short", "cat settings.py", "git stash list"],
+      "verify": [
+        { "cmd": "cat settings.py", "contains": ["POOL_SIZE = 25", "TIMEOUT = 60"],
+          "label": "both changes survived the resolution" },
+        { "cmd": "git stash list", "empty": true, "label": "the stash entry was dropped manually" }
+      ]
+    },
+    {
+      "title": "The better route: stash branch",
+      "why": "`git stash branch <name>` creates a branch at the stash's ORIGINAL base commit, applies the stash there, and drops it. Same base as when you stashed, so it cannot conflict — then you merge or rebase deliberately.",
+      "actions": [
+        { "run": "git commit -q -a -m \"Adopt the larger pool size\"" },
+        { "write": { "path": "settings.py", "content": "POOL_SIZE = 25\nTIMEOUT = 60\nRETRIES = 8\n" } },
+        { "run": "git stash push -m \"experiment: more retries\"" },
+        { "write": { "path": "settings.py", "content": "POOL_SIZE = 25\nTIMEOUT = 90\nRETRIES = 3\n" } },
+        { "run": "git commit -q -a -m \"Raise timeout again\"" }
+      ],
+      "commands": ["git stash branch experiment/retries", "git status --short", "cat settings.py", "git branch -vv"],
+      "expect": "A new branch at the stash's base, work applied cleanly, no conflict, stash gone.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "experiment/retries",
+          "label": "you are on the new branch created from the stash" },
+        { "cmd": "cat settings.py", "contains": "RETRIES = 8",
+          "label": "the stashed work applied without conflict" },
+        { "cmd": "git stash list", "empty": true, "label": "stash branch dropped the entry for you" }
+      ]
+    },
+    {
+      "title": "Integrate deliberately",
+      "why": "Now the experiment is a branch like any other. Commit it and merge when you are ready — you have converted an awkward stash restore into an ordinary merge, which is a much better problem to have.",
+      "commands": ["git commit -q -a -m \"Try eight retries\"", "git log --oneline --graph --all --decorate", "git switch main"],
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main", "label": "back on main" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline experiment/retries", "contains": "Try eight retries",
+      "label": "the second experiment became a real branch",
+      "hint": "git stash branch experiment/retries" },
+    { "cmd": "git stash list", "empty": true,
+      "label": "no stash entries were left behind",
+      "hint": "a conflicted pop keeps the entry — drop it yourself once resolved" },
+    { "cmd": "git show main:settings.py", "contains": ["POOL_SIZE = 25", "TIMEOUT = 90"],
+      "label": "main kept the resolved pool size and the newer timeout" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main", "label": "you finished on main" }
+  ],
+  "pitfalls": [
+    "A conflicted `pop` leaves the entry in the list. Forget to drop it and you will re-apply the same work weeks later, wondering where it came from.",
+    "`git stash branch` only works cleanly if the stash's base commit still exists — after a rebase or a force push it may not.",
+    "`git stash apply` on a different branch is a three-way merge, not a copy. It can conflict even when the files look unrelated.",
+    "`git checkout -- .` while a pop is conflicted destroys the resolution in progress. Use `git checkout --merge` or drop and re-apply."
+  ],
+  "cheatsheet": [
+    ["git stash show -p stash@{0}", "read a stash before applying it"],
+    ["git stash pop", "apply and drop — keeps the entry if it conflicts"],
+    ["git stash branch <name>", "new branch at the stash's base, applied cleanly"],
+    ["git stash drop stash@{n}", "remove one entry"],
+    ["git stash apply stash@{2}", "apply a specific older entry"],
+    ["git stash list --format='%gd %s'", "readable listing"]
+  ]
+}

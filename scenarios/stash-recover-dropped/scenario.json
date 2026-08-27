@@ -1,0 +1,105 @@
+{
+  "id": "stash-recover-dropped",
+  "title": "You dropped the wrong stash",
+  "category": "stash",
+  "level": "expert",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "git stash drop prints a sha and says the entry is gone. It is not — a stash is a commit, and that commit is still in the object database. Get it back.",
+  "concepts": ["stash entries are commits", "stash drop output", "fsck --unreachable", "stash's three parents", "git stash store"],
+  "mental_model": "Each stash entry is a commit whose first parent is where you were, second parent holds the index state, and third (with -u) holds untracked files. Dropping deletes the reflog entry, not the commits.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "optimiser.py", "content": "def optimise(items):\n    \"\"\"Two hours of work, stashed and then dropped by mistake.\"\"\"\n    ranked = sorted(items, key=lambda i: i['cost'])\n    return [i for i in ranked if i['cost'] < 100]\n" } },
+    { "run": "git stash push -u -m \"wip: schedule optimiser\"" },
+    { "write": { "path": "notes.md", "content": "scratch\n" } },
+    { "run": "git stash push -u -m \"scratch notes\"" }
+  ],
+  "steps": [
+    {
+      "title": "Two stashes, one of them valuable",
+      "why": "stash@{0} is the scratch notes; stash@{1} is two hours of real work. The indices shift every time you push or drop, which is exactly how the wrong one gets deleted.",
+      "commands": ["git stash list", "git stash show -p stash@{1}"],
+      "expect": "The optimiser code in the second entry."
+    },
+    {
+      "title": "Drop the wrong one",
+      "why": "Meaning to remove the scratch notes, you drop stash@{1}. Read the output carefully: git prints the sha of the commit it just detached. That line is your recovery key.",
+      "commands": ["git stash drop stash@{1}", "git stash list"],
+      "expect": "'Dropped stash@{1} (<sha>)' and only the scratch entry remaining.",
+      "verify": [
+        { "cmd": "git stash list", "lines": 1, "label": "one stash entry left — the wrong one" }
+      ]
+    },
+    {
+      "title": "Confirm the work is not in the working tree either",
+      "why": "The file never existed on disk after stashing, and the entry is gone from the list. By every normal measure the work has vanished.",
+      "commands": ["ls", "git status --short", "git stash list"],
+      "expect": "No optimiser.py anywhere."
+    },
+    {
+      "title": "Find the dropped commit",
+      "why": "`fsck --unreachable` lists commits nothing points at. The dropped stash is right there — it was never deleted, only unreferenced.",
+      "commands": ["git fsck --unreachable --no-reflogs", "sh -c 'git fsck --unreachable --no-reflogs 2>/dev/null | grep \"unreachable commit\"'"],
+      "expect": "One or more unreachable commits, including the stash.",
+      "verify": [
+        { "cmd": "git fsck --unreachable --no-reflogs", "contains": "unreachable commit",
+          "label": "the dropped stash commit is still in the object database" }
+      ]
+    },
+    {
+      "title": "Identify it by its message",
+      "why": "A stash commit's subject is the message you gave it. Printing each candidate's subject tells you instantly which unreachable commit is the one you want.",
+      "commands": ["sh -c 'for sha in $(git fsck --unreachable --no-reflogs 2>/dev/null | grep \"unreachable commit\" | cut -d\" \" -f3); do echo \"$sha $(git log -1 --format=%s $sha)\"; done'"],
+      "expect": "A line containing 'wip: schedule optimiser'."
+    },
+    {
+      "title": "Put it back in the stash list",
+      "why": "`git stash store` takes a commit and re-registers it as a stash entry. Cleaner than applying it directly, because it restores the entry rather than just the content.",
+      "actions": [
+        { "run": "sh -c 'git stash store -m \"recovered: schedule optimiser\" $(for sha in $(git fsck --unreachable --no-reflogs 2>/dev/null | grep \"unreachable commit\" | cut -d\" \" -f3); do git log -1 --format=\"%H %s\" $sha; done | grep \"schedule optimiser\" | cut -d\" \" -f1)'" }
+      ],
+      "commands": ["git stash list", "git stash show -p stash@{0}"],
+      "expect": "Two entries again, the recovered one on top.",
+      "verify": [
+        { "cmd": "git stash list", "lines": 2,
+          "label": "the dropped stash is back in the list",
+          "hint": "git stash store <sha-from-fsck>" }
+      ]
+    },
+    {
+      "title": "Restore the work and commit it",
+      "why": "Pop it like any stash. Then commit immediately — the whole incident happened because valuable work was sitting in a stash rather than on a branch.",
+      "commands": ["git stash pop", "ls", "cat optimiser.py", "git add -A", "git commit -m \"Add schedule optimiser\"", "git log --oneline"],
+      "verify": [
+        { "cmd": "git show HEAD:optimiser.py", "contains": "def optimise",
+          "label": "the recovered work is committed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show HEAD:optimiser.py", "contains": ["def optimise", "cost'] < 100"],
+      "label": "the wrongly dropped stash was recovered and committed",
+      "hint": "git fsck --unreachable, find the commit by message, git stash store it" },
+    { "cmd": "git log --oneline", "lines": 2, "label": "the recovery is a real commit now" },
+    { "cmd": "git stash list", "lines": 1,
+      "label": "the scratch stash is still there, untouched" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`git stash clear` drops every entry at once and is the usual cause of this incident. The same recovery works, but you must identify each commit by message.",
+    "`git gc --prune=now` deletes unreachable objects. Recover first, tidy later.",
+    "Stash indices renumber on every push and drop. Always drop by inspecting `git stash show` first, never by remembered index.",
+    "A stash is not a branch and not backed up. Anything worth keeping for more than a day belongs on a branch."
+  ],
+  "cheatsheet": [
+    ["git stash drop", "prints the dropped commit's sha — copy it"],
+    ["git fsck --unreachable --no-reflogs", "find dropped stash commits"],
+    ["git log -1 --format=%s <sha>", "identify one by its message"],
+    ["git stash store -m \"note\" <sha>", "re-register a commit as a stash entry"],
+    ["git stash apply <sha>", "apply a stash commit directly, without storing it"],
+    ["git stash show -p <ref>", "read before you drop"]
+  ]
+}
