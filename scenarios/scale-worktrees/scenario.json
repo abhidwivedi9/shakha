@@ -1,0 +1,108 @@
+{
+  "id": "scale-worktrees",
+  "title": "Two branches checked out at once, one repository",
+  "category": "scale",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "Stop stashing every time an urgent fix arrives. A worktree gives you a second working directory on the same repository, with its own branch, sharing all the objects.",
+  "concepts": ["git worktree add", "linked worktrees", "shared object store", "worktree list/remove/prune", "one branch per worktree"],
+  "mental_model": "A repository has one object database and can have many working directories. Each worktree checks out a different branch and has its own index and HEAD, but commits land in the same shared store instantly.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/big-refactor" },
+    { "write": { "path": "refactor.py", "content": "WORK_IN_PROGRESS = True\n" } },
+    { "commit": { "message": "Start the refactor" } },
+    { "write": { "path": "refactor.py", "content": "WORK_IN_PROGRESS = True\nHALF_DONE = 'do not commit yet'\n" } }
+  ],
+  "steps": [
+    {
+      "title": "The situation stash usually solves badly",
+      "why": "You are mid-refactor with uncommitted work, and a production fix is needed on main. Stashing works but costs you the running test process, the open editor state, and your place.",
+      "commands": ["git status --short", "git branch -vv", "cat refactor.py"]
+    },
+    {
+      "title": "Add a second working directory",
+      "why": "`worktree add` creates a real directory with main checked out. Your current directory is untouched — the half-finished refactor stays exactly as it is, uncommitted.",
+      "commands": ["git worktree add ../hotfix main", "git worktree list", "git status --short"],
+      "expect": "A new worktree listed, and your own status still showing the modified file.",
+      "verify": [
+        { "cmd": "git worktree list", "lines": 2, "label": "there are now two worktrees" },
+        { "cmd": "git status --porcelain", "contains": "refactor.py",
+          "label": "your uncommitted work was never touched" }
+      ]
+    },
+    {
+      "title": "Work in the other directory",
+      "why": "It is a normal working tree: edit, add, commit. The commit goes into the shared object database immediately, so the main repository can see it without any pushing or fetching.",
+      "actions": [
+        { "cwd": "hotfix", "write": { "path": "app.py", "content": "print('v1.0.1 - hotfix')\n" } },
+        { "cwd": "hotfix", "run": "git add -A" },
+        { "cwd": "hotfix", "run": "git commit -q -m \"Fix the production banner\"" }
+      ],
+      "cwd": "hotfix",
+      "commands": ["git log --oneline", "git status --short", "cat app.py"],
+      "verify": [
+        { "cmd": "git log --oneline main", "contains": "Fix the production banner",
+          "label": "the commit landed on main from the other worktree" }
+      ]
+    },
+    {
+      "title": "See it from the original directory",
+      "why": "No fetch, no pull. `git log main` from here already shows the commit, because there is only one object store and one set of refs.",
+      "commands": ["git log --oneline main", "git log --oneline --all --decorate --graph", "git status --short", "cat refactor.py"],
+      "expect": "The hotfix commit visible, and your refactor still uncommitted and untouched."
+    },
+    {
+      "title": "Try to check out the same branch twice",
+      "why": "Git refuses: two worktrees on one branch would let two indexes fight over the same ref. The restriction is the reason worktrees are safe rather than confusing.",
+      "commands": ["git worktree add ../second-main main"],
+      "expect": "fatal: 'main' is already used by worktree at ... — exit code 128."
+    },
+    {
+      "title": "Look at the plumbing",
+      "why": "The linked worktree has a `.git` *file* pointing back at the main repository's `.git/worktrees/<name>` directory, which holds its own HEAD and index. Small, cheap, and disposable.",
+      "commands": ["sh -c 'cat ../hotfix/.git'", "ls .git/worktrees", "sh -c 'cat .git/worktrees/hotfix/HEAD'"],
+      "expect": "A gitdir: pointer, and per-worktree HEAD and index files."
+    },
+    {
+      "title": "Clean up when the fix ships",
+      "why": "`worktree remove` deletes the directory and its metadata. If the directory was deleted by hand instead, `worktree prune` clears the leftover bookkeeping.",
+      "commands": ["git worktree remove ../hotfix", "git worktree list", "git worktree prune", "git log --oneline main"],
+      "expect": "One worktree again — and the hotfix commit still safely on main.",
+      "verify": [
+        { "cmd": "git worktree list", "lines": 1, "label": "the extra worktree was removed" },
+        { "cmd": "git log --oneline main", "contains": "Fix the production banner",
+          "label": "…while its commit remains, because objects are shared" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "contains": "Fix the production banner",
+      "label": "the hotfix was committed to main from a second worktree",
+      "hint": "git worktree add ../hotfix main" },
+    { "cmd": "git status --porcelain", "contains": "refactor.py",
+      "label": "your uncommitted refactor survived the whole exercise, unstashed" },
+    { "cmd": "git worktree list", "lines": 1,
+      "label": "the temporary worktree was cleaned up",
+      "hint": "git worktree remove ../hotfix" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/big-refactor",
+      "label": "you never left your branch" }
+  ],
+  "pitfalls": [
+    "A branch can be checked out in only one worktree at a time. This is a feature — it prevents two indexes disagreeing about the same ref.",
+    "Deleting a worktree directory by hand leaves stale metadata. Run `git worktree prune`, or use `git worktree remove`.",
+    "Worktrees share hooks, config and objects but NOT the index or stash. `git stash` in one is invisible in the other.",
+    "`git worktree add -b <new> <path>` creates the branch as it goes, which is usually what you want for a hotfix."
+  ],
+  "cheatsheet": [
+    ["git worktree add <path> <branch>", "second working directory on an existing branch"],
+    ["git worktree add -b <new> <path>", "…creating a new branch"],
+    ["git worktree add --detach <path> <sha>", "check out a commit for inspection"],
+    ["git worktree list", "every working directory and its branch"],
+    ["git worktree remove <path>", "delete one cleanly"],
+    ["git worktree prune", "clear metadata for directories deleted by hand"]
+  ]
+}

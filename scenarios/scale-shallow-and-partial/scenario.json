@@ -1,0 +1,117 @@
+{
+  "id": "scale-shallow-and-partial",
+  "title": "Clone a huge repository in seconds",
+  "category": "scale",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "Shallow and partial clones both make cloning fast, in completely different ways — and they break different things. Compare them, then repair a CI job that fails because of one.",
+  "concepts": ["--depth", "shallow grafts", "--filter=blob:none", "lazy blob fetching", "--unshallow", "CI clone strategy"],
+  "mental_model": "Shallow truncates history: you get the last N commits and nothing before. Partial keeps all commits but skips file contents, fetching them on demand. Shallow breaks history commands; partial only costs you a network round trip.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Commit one" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Commit two" } },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Commit three" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" },
+    { "write": { "path": "app.py", "content": "print('v4')\n" } },
+    { "commit": { "message": "Commit four" } },
+    { "write": { "path": "app.py", "content": "print('v5')\n" } },
+    { "commit": { "message": "Commit five" } }
+  ],
+  "steps": [
+    {
+      "title": "The full clone, for comparison",
+      "why": "Five commits, a tag, complete history. Everything below is a trade against this baseline.",
+      "commands": ["git log --oneline", "git describe", "git count-objects -vH"]
+    },
+    {
+      "title": "Make a shallow clone",
+      "why": "`--depth 1` fetches one commit and no ancestors. On a repository with a decade of history this is the difference between four minutes and four seconds — which is why CI systems default to it.",
+      "commands": ["sh -c 'git clone -q --depth 1 \"file://$(pwd)\" ../shallow'", "sh -c 'cd ../shallow && git log --oneline'", "sh -c 'cd ../shallow && cat .git/shallow'"],
+      "expect": "One commit, and a .git/shallow file listing the cut-off point. Note the file:// prefix — a plain local path makes git hardlink the whole object store and ignore --depth entirely.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "shallow", "lines": 1,
+          "label": "the shallow clone has exactly one commit" }
+      ]
+    },
+    {
+      "title": "Watch what breaks",
+      "why": "No ancestors means no `describe`, no useful `blame`, no `bisect`, and diffs against older commits are impossible. Every CI failure of the form 'fatal: no tag can describe' comes from here.",
+      "cwd": "shallow",
+      "commands": ["git describe", "git log --oneline HEAD~2", "git tag"],
+      "expect": "describe fails, HEAD~2 does not exist, no tags fetched."
+    },
+    {
+      "title": "Deepen or unshallow to repair it",
+      "why": "`--unshallow` fetches the missing history and removes the shallow marker. `--depth=N` on fetch deepens partially. This is the two-line fix for a CI job that needs `git describe`.",
+      "cwd": "shallow",
+      "commands": ["git fetch --unshallow --tags", "git log --oneline", "git describe", "ls .git"],
+      "expect": "Full history, tags present, describe works, no .git/shallow file.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "shallow", "lines": 5,
+          "label": "the history was restored",
+          "hint": "git fetch --unshallow" },
+        { "cmd": "git describe", "cwd": "shallow", "matches": "^v1\\.0-2-g",
+          "label": "describe works again once tags and history exist",
+          "hint": "add --tags: unshallowing alone does not fetch them" }
+      ]
+    },
+    {
+      "title": "Now a partial clone instead",
+      "why": "`--filter=blob:none` fetches every commit and tree but no file contents. History commands all work; the files arrive lazily the first time you actually read them.",
+      "commands": ["sh -c 'git clone -q --filter=blob:none \"$(pwd)\" ../partial'", "sh -c 'cd ../partial && git log --oneline'", "sh -c 'cd ../partial && git describe'"],
+      "expect": "All five commits and a working describe — unlike the shallow clone.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "partial", "lines": 5,
+          "label": "the partial clone has full history" },
+        { "cmd": "git describe", "cwd": "partial", "matches": "^v1\\.0-2-g",
+          "label": "…so describe works immediately" }
+      ]
+    },
+    {
+      "title": "See the lazy fetch happen",
+      "why": "Reading an old file's content triggers a fetch of just that blob. The cost moves from clone time to first-access time, which for CI is usually a much better trade.",
+      "cwd": "partial",
+      "commands": ["git config --get remote.origin.promisor", "git config --get remote.origin.partialclonefilter", "git show HEAD~4:app.py", "git log --oneline -- app.py"],
+      "expect": "The old file content, fetched on demand, and promisor config marking the remote as a lazy source."
+    },
+    {
+      "title": "Choose deliberately",
+      "why": "For a build that only compiles the tip: shallow is fine and fastest. For anything that reads history — versioning, changelogs, blame annotations, bisect — partial is the correct choice.",
+      "commands": ["sh -c 'echo shallow: $(cd ../shallow && git log --oneline | wc -l) commits'", "sh -c 'echo partial: $(cd ../partial && git log --oneline | wc -l) commits'"],
+      "expect": "Both now usable, having got there very differently."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "cwd": "shallow", "lines": 5,
+      "label": "the shallow clone was repaired with --unshallow",
+      "hint": "git fetch --unshallow --tags" },
+    { "cmd": "git describe", "cwd": "shallow", "matches": "^v1\\.0-2-g",
+      "label": "describe works there now" },
+    { "cmd": "git log --oneline", "cwd": "partial", "lines": 5,
+      "label": "the partial clone had full history from the start",
+      "hint": "git clone --filter=blob:none" },
+    { "cmd": "git config --get remote.origin.partialclonefilter", "cwd": "partial",
+      "equals": "blob:none",
+      "label": "…and is configured to fetch blobs lazily" }
+  ],
+  "pitfalls": [
+    "`git fetch --unshallow` does not fetch tags. Add `--tags`, or `git describe` still fails.",
+    "A shallow clone cannot be pushed from in some server configurations, and `git bisect` is useless in one.",
+    "Partial clones need a server that supports the protocol. GitHub, GitLab and modern Gitea do; some older self-hosted setups do not.",
+    "In CI, `actions/checkout` defaults to depth 1. Set `fetch-depth: 0` when your build reads history — that single line fixes most versioning failures."
+  ],
+  "cheatsheet": [
+    ["git clone --depth 1 <url>", "shallow: newest commit only"],
+    ["git fetch --unshallow --tags", "restore full history and tags"],
+    ["git fetch --depth=50", "deepen partially"],
+    ["git clone --filter=blob:none <url>", "partial: all history, no file contents yet"],
+    ["git clone --filter=blob:none --sparse <url>", "the big-monorepo combination"],
+    ["git rev-parse --is-shallow-repository", "check which kind you have"],
+    ["git count-objects -vH", "how much you actually downloaded"]
+  ]
+}

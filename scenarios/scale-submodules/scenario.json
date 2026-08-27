@@ -1,0 +1,129 @@
+{
+  "id": "scale-submodules",
+  "title": "Submodules: a repository pinned inside another repository",
+  "category": "scale",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 16,
+  "summary": "Add a shared library as a submodule, understand that the parent stores a commit sha rather than files, and survive the detached-HEAD trap that catches everyone the first time.",
+  "concepts": [".gitmodules", "gitlink entries", "submodule update --init", "detached HEAD in submodules", "--recurse-submodules"],
+  "mental_model": "The parent repository stores one thing per submodule: the exact commit sha it wants. The submodule's files are not in the parent's history at all. That pin is the whole feature — and the whole difficulty.",
+  "danger": "Committing inside a submodule while it is on a detached HEAD makes commits that no branch points at. Push fails, and the work is reachable only through the reflog.",
+  "setup": [
+    { "run": "git init -q -b main ../shared-lib" },
+    { "cwd": "shared-lib", "write": { "path": "sensors.py", "content": "def read_ph():\n    return 8.1\n" } },
+    { "cwd": "shared-lib", "run": "git add -A" },
+    { "cwd": "shared-lib", "run": "git commit -q -m \"Add pH sensor library\"" },
+    { "cwd": "shared-lib", "write": { "path": "sensors.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n" } },
+    { "cwd": "shared-lib", "run": "git add -A" },
+    { "cwd": "shared-lib", "run": "git commit -q -m \"Add temperature sensor\"" },
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Add the library as a submodule",
+      "why": "`submodule add` clones it into a subdirectory and stages two things: a `.gitmodules` file describing where it came from, and a special index entry recording which commit is pinned.",
+      "commands": ["git -c protocol.file.allow=always submodule add ../shared-lib vendor/sensors", "git status --short", "cat .gitmodules", "ls vendor/sensors"],
+      "expect": "A .gitmodules file and vendor/sensors staged.",
+      "verify": [
+        { "cmd": "cat .gitmodules", "contains": "vendor/sensors",
+          "label": "the submodule is registered in .gitmodules" }
+      ]
+    },
+    {
+      "title": "See what the parent actually stores",
+      "why": "`ls-files -s` shows mode 160000 — a gitlink. Not a file, not a tree: a pointer to a commit in another repository. The library's source code is not in this repository at all.",
+      "commands": ["git ls-files -s vendor/sensors", "git commit -q -m \"Vendor the sensor library\"", "git ls-tree HEAD vendor", "git show --stat HEAD"],
+      "expect": "mode 160000 and a commit sha.",
+      "verify": [
+        { "cmd": "git ls-tree HEAD vendor/sensors", "contains": "160000",
+          "label": "the parent stores a gitlink, not files",
+          "hint": "commit after git submodule add" }
+      ]
+    },
+    {
+      "title": "Clone the parent and find an empty directory",
+      "why": "A plain clone creates the submodule directory and leaves it empty. This is the single most reported submodule problem, and it is intended behaviour — the pin is there, the content is not fetched.",
+      "commands": ["sh -c 'git clone -q \"$(pwd)\" ../consumer'", "sh -c 'ls ../consumer/vendor/sensors'", "sh -c 'cd ../consumer && git submodule status'"],
+      "expect": "An empty directory, and a status line prefixed with - meaning uninitialised. (The clone uses an absolute path: a relative submodule URL in .gitmodules is resolved against the superproject's remote URL, so cloning from '.' would resolve it wrongly.)"
+    },
+    {
+      "title": "Initialise and fetch the pinned commit",
+      "why": "`--init --recursive` reads .gitmodules, clones each submodule, and checks out exactly the pinned sha. `git clone --recurse-submodules` does it in one step at clone time.",
+      "cwd": "consumer",
+      "commands": ["git -c protocol.file.allow=always submodule update --init --recursive", "ls vendor/sensors", "git submodule status", "cat vendor/sensors/sensors.py"],
+      "expect": "The library's files appear, at the pinned commit.",
+      "verify": [
+        { "cmd": "cat vendor/sensors/sensors.py", "cwd": "consumer", "contains": "read_temp",
+          "label": "the submodule content is present in the clone",
+          "hint": "git submodule update --init --recursive" }
+      ]
+    },
+    {
+      "title": "Look inside — you are detached",
+      "why": "A submodule is checked out at a commit, not a branch, because the parent pins a sha. Committing here creates work no branch points at. Always `git switch main` inside a submodule before editing.",
+      "cwd": "consumer/vendor/sensors",
+      "commands": ["git status", "git branch -a", "git log --oneline -1"],
+      "expect": "HEAD detached at the pinned commit."
+    },
+    {
+      "title": "Update the library and move the pin",
+      "why": "Two commits are needed: one in the submodule, one in the parent recording the new sha. Forgetting the second is why colleagues report 'it works for you but not for me'.",
+      "actions": [
+        { "cwd": "shared-lib", "write": { "path": "sensors.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n\n\ndef read_salinity():\n    return 1.025\n" } },
+        { "cwd": "shared-lib", "run": "git add -A" },
+        { "cwd": "shared-lib", "run": "git commit -q -m \"Add salinity sensor\"" },
+        { "cwd": "repo/vendor/sensors", "run": "git -c protocol.file.allow=always fetch -q origin" },
+        { "cwd": "repo/vendor/sensors", "run": "git -c protocol.file.allow=always merge -q --ff-only origin/main" }
+      ],
+      "commands": ["git status --short", "git diff --submodule", "git add vendor/sensors", "git commit -q -m \"Bump sensor library to include salinity\"", "git ls-tree HEAD vendor/sensors"],
+      "expect": "The parent's status shows the submodule as modified — meaning its pin changed.",
+      "verify": [
+        { "cmd": "git log --oneline", "contains": "Bump sensor library",
+          "label": "the parent recorded the new pin",
+          "hint": "after updating the submodule, git add the submodule path in the parent" }
+      ]
+    },
+    {
+      "title": "Check every submodule at once",
+      "why": "`submodule status` in the parent, and `--recurse-submodules` on fetch and push, are how you avoid the classic failure: pushing a parent that pins a commit nobody else can fetch.",
+      "commands": ["git submodule status", "git submodule foreach 'git log --oneline -1'", "git config --global submodule.recurse true"],
+      "verify": [
+        { "cmd": "git config --global --get submodule.recurse", "equals": "true",
+          "label": "submodule.recurse is on, so pull and checkout keep submodules in step" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-tree HEAD vendor/sensors", "contains": "160000",
+      "label": "the parent pins the library by commit sha",
+      "hint": "git submodule add, then commit" },
+    { "cmd": "cat .gitmodules", "contains": "vendor/sensors",
+      "label": ".gitmodules records where the submodule comes from" },
+    { "cmd": "git log --oneline", "contains": "Bump sensor library",
+      "label": "the pin was moved forward in its own parent commit",
+      "hint": "updating a submodule always takes two commits" },
+    { "cmd": "cat vendor/sensors/sensors.py", "contains": "read_salinity",
+      "label": "the working tree has the updated library" },
+    { "cmd": "git config --global --get submodule.recurse", "equals": "true",
+      "label": "submodule.recurse is configured" }
+  ],
+  "pitfalls": [
+    "A fresh clone leaves submodule directories empty. Use `git clone --recurse-submodules`, or run `git submodule update --init --recursive` immediately after.",
+    "Submodules check out detached. `git switch main` inside one before committing, or your commits belong to no branch.",
+    "Push the submodule BEFORE pushing the parent. Otherwise the parent pins a commit nobody else can fetch, and every colleague's checkout fails.",
+    "`git submodule update` without `--merge` or `--rebase` throws away local commits in the submodule by resetting to the pinned sha.",
+    "For internal code you control, a monorepo or a package registry is usually less painful than submodules."
+  ],
+  "cheatsheet": [
+    ["git submodule add <url> <path>", "vendor a repository at a path"],
+    ["git clone --recurse-submodules <url>", "clone with content, not empty directories"],
+    ["git submodule update --init --recursive", "fix an existing empty clone"],
+    ["git submodule status", "which sha each submodule is pinned to"],
+    ["git submodule foreach '<cmd>'", "run a command in every submodule"],
+    ["git diff --submodule", "show pin changes readably"],
+    ["git config --global submodule.recurse true", "keep submodules in step automatically"]
+  ]
+}

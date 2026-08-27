@@ -106,11 +106,18 @@ class Sandbox:
         return self.repo.exists()
 
     def resolve_cwd(self, name):
-        return {
-            "repo": self.repo,
-            "origin": self.origin,
-            "teammate": self.teammate,
-        }.get(name or "repo", self.repo)
+        """Map a cwd label to a directory inside the sandbox.
+
+        Three labels are built in; anything else is treated as a directory name
+        under the sandbox root, which is how worktree and clone scenarios reach
+        the extra directories they create.
+        """
+        known = {"repo": self.repo, "origin": self.origin, "teammate": self.teammate}
+        if not name:
+            return self.repo
+        if name in known:
+            return known[name]
+        return self._guard(self.base / name)
 
     # ---- execution --------------------------------------------------------
 

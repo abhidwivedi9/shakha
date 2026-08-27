@@ -1,0 +1,119 @@
+{
+  "id": "scale-sparse-checkout",
+  "title": "Check out three directories from a monorepo, not all forty",
+  "category": "scale",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 12,
+  "summary": "Your team owns two services in a huge repository. Sparse-checkout gives you only those directories on disk, while git still has the full history.",
+  "concepts": ["sparse-checkout init --cone", "sparse-checkout set/add/list", "skip-worktree", "sparse-checkout disable", "monorepo ergonomics"],
+  "mental_model": "Sparse-checkout changes what lands in your working tree, not what is in the repository. Every commit, branch and file is still there — git simply skips writing most of them to disk.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "services/payments/app.py", "content": "print('payments')\n" } },
+    { "write": { "path": "services/payments/README.md", "content": "# Payments\n" } },
+    { "write": { "path": "services/catalog/app.py", "content": "print('catalog')\n" } },
+    { "write": { "path": "services/search/app.py", "content": "print('search')\n" } },
+    { "write": { "path": "services/billing/app.py", "content": "print('billing')\n" } },
+    { "write": { "path": "libs/common/util.py", "content": "def helper():\n    return True\n" } },
+    { "write": { "path": "docs/architecture.md", "content": "# Architecture\n" } },
+    { "write": { "path": "README.md", "content": "# Monorepo\n" } },
+    { "commit": { "message": "Add the monorepo" } }
+  ],
+  "steps": [
+    {
+      "title": "See everything you did not ask for",
+      "why": "Five services, a library and docs. In a real monorepo this is tens of thousands of files, most of which your editor will index and your search will trawl through.",
+      "commands": ["git ls-files", "ls services"],
+      "expect": "Every path in the repository, on disk."
+    },
+    {
+      "title": "Turn on cone-mode sparse checkout",
+      "why": "Cone mode restricts patterns to whole directories, which keeps it fast on huge trees. Immediately after init, only root-level files remain in the working tree.",
+      "commands": ["git sparse-checkout init --cone", "ls", "git sparse-checkout list", "git ls-files"],
+      "expect": "Root files only on disk — but ls-files still lists everything, because the repository is unchanged.",
+      "verify": [
+        { "cmd": "ls", "not_contains": "services", "label": "the service directories left the working tree" }
+      ]
+    },
+    {
+      "title": "Ask for the directories you own",
+      "why": "`set` replaces the list with the paths you name. Their parents come along automatically, and everything else stays out of the working tree.",
+      "commands": ["git sparse-checkout set services/payments libs/common", "ls", "ls services", "git sparse-checkout list"],
+      "expect": "payments and libs/common present; catalog, search and billing absent.",
+      "verify": [
+        { "cmd": "ls services", "contains": "payments", "label": "your service is checked out" },
+        { "cmd": "ls services", "not_contains": ["catalog", "search"],
+          "label": "the ones you do not own are not on disk",
+          "hint": "git sparse-checkout set services/payments libs/common" }
+      ]
+    },
+    {
+      "title": "Prove the rest is still in git",
+      "why": "`git show` reads a file you cannot see on disk, and `git log` covers commits touching it. Nothing was removed from history — this is a working-tree feature only.",
+      "commands": ["git show HEAD:services/search/app.py", "git ls-files services/search", "git log --oneline -- services/billing"],
+      "expect": "Content and history for files that are not on your disk."
+    },
+    {
+      "title": "Add a directory without retyping the list",
+      "why": "`add` appends to the cone. Use it when a task drags you into a neighbouring service for an afternoon.",
+      "commands": ["git sparse-checkout add services/catalog", "ls services", "git sparse-checkout list"],
+      "verify": [
+        { "cmd": "ls services", "contains": ["payments", "catalog"],
+          "label": "the extra directory was added",
+          "hint": "git sparse-checkout add services/catalog" }
+      ]
+    },
+    {
+      "title": "Commits still cover everything",
+      "why": "Changing a file you can see commits normally, and files outside the cone are untouched rather than deleted. A sparse checkout cannot accidentally delete the rest of the monorepo.",
+      "actions": [
+        { "write": { "path": "services/payments/app.py", "content": "print('payments v2')\n" } }
+      ],
+      "commands": ["git add -A", "git commit -q -m \"Update payments service\"", "git show --stat HEAD", "git ls-files"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "not_contains": ["search", "billing"],
+          "label": "the commit touched only what you edited" },
+        { "cmd": "git ls-files", "contains": "services/billing/app.py",
+          "label": "…and every other path is still tracked" }
+      ]
+    },
+    {
+      "title": "Turn it off again",
+      "why": "`disable` restores the full working tree. Nothing was lost, and the repository never knew the difference — which is what makes sparse-checkout safe to experiment with.",
+      "commands": ["git sparse-checkout disable", "ls services", "git status --short"],
+      "verify": [
+        { "cmd": "ls services", "contains": ["payments", "catalog", "search", "billing"],
+          "label": "the full tree is back",
+          "hint": "git sparse-checkout disable" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "you committed normally while sparsely checked out",
+      "hint": "sparse-checkout does not restrict what you can commit" },
+    { "cmd": "git show --stat HEAD", "not_contains": ["search", "billing"],
+      "label": "the commit contains only your service's change" },
+    { "cmd": "git ls-files", "contains": ["services/billing/app.py", "docs/architecture.md"],
+      "label": "every path is still tracked in the repository" },
+    { "cmd": "ls services", "contains": ["payments", "catalog", "search", "billing"],
+      "label": "the working tree was restored with sparse-checkout disable" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Files outside the cone are marked skip-worktree, not deleted. Tools that scan the working tree will simply not see them — including your own scripts.",
+    "Non-cone mode accepts full gitignore-style patterns and is dramatically slower on large repositories. Stay in cone mode unless you truly need patterns.",
+    "A merge that touches paths outside your cone still succeeds; you just cannot see the conflict files. Widen the cone before a large merge.",
+    "Combine with `git clone --filter=blob:none` for the real monorepo win: fast clone AND small working tree."
+  ],
+  "cheatsheet": [
+    ["git sparse-checkout init --cone", "turn it on, directory-based"],
+    ["git sparse-checkout set <dirs>", "replace the checked-out set"],
+    ["git sparse-checkout add <dir>", "widen it"],
+    ["git sparse-checkout list", "what is currently checked out"],
+    ["git sparse-checkout reapply", "after changing branches or patterns"],
+    ["git sparse-checkout disable", "restore the whole working tree"],
+    ["git clone --filter=blob:none --sparse <url>", "the full monorepo setup"]
+  ]
+}

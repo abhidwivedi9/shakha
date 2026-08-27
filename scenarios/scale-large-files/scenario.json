@@ -1,0 +1,116 @@
+{
+  "id": "scale-large-files",
+  "title": "A 50MB file is in your history forever",
+  "category": "scale",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Someone committed a binary blob. Deleting it does nothing to the clone size. Find the offender, measure the damage, and understand what LFS would have done instead.",
+  "concepts": ["repository size", "count-objects -vH", "rev-list --objects", "cat-file --batch-check", "git LFS pointers", "gc"],
+  "mental_model": "Every version of every file ever committed lives in the object database forever. Deleting a file only stops it appearing in new commits — the blob stays, and every clone downloads it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "sh -c 'head -c 900000 /dev/urandom | base64 > assets/sample-tank.raw 2>/dev/null || (mkdir -p assets && head -c 900000 /dev/urandom | base64 > assets/sample-tank.raw)'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add sample tank capture\"" },
+    { "write": { "path": "app.py", "content": "print('reef v2')\n" } },
+    { "commit": { "message": "Bump version" } },
+    { "delete": "assets/sample-tank.raw" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Remove the sample capture, it was a mistake\"" }
+  ],
+  "steps": [
+    {
+      "title": "The file is gone — and the repository is not smaller",
+      "why": "The working tree is clean of it and HEAD does not contain it. Yet the object database still holds every byte, because a commit in the middle of history does.",
+      "commands": ["ls", "git ls-files", "git count-objects -vH"],
+      "expect": "No assets directory, but a size-pack far larger than the source warrants."
+    },
+    {
+      "title": "List every object with its size",
+      "why": "`rev-list --objects --all` enumerates every object in history with its path; `cat-file --batch-check` reports each one's type and size. Piped together, they are the standard repository-forensics tool.",
+      "commands": ["sh -c 'git rev-list --objects --all | git cat-file --batch-check=\"%(objecttype) %(objectname) %(objectsize) %(rest)\" | grep ^blob | sort -k3 -rn | head -5'"],
+      "expect": "The capture file at the top, by a wide margin.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --objects --all | git cat-file --batch-check=\"%(objecttype) %(objectsize) %(rest)\" | grep ^blob | sort -k2 -rn | head -1'",
+          "contains": "sample-tank.raw",
+          "label": "the largest blob in history is identifiable" }
+      ]
+    },
+    {
+      "title": "Find which commits carry it",
+      "why": "Knowing the path, `log --diff-filter` tells you when it arrived and when it left. Both commits still contain it in their trees — that is why it cannot simply be forgotten.",
+      "commands": ["git log --oneline --diff-filter=A -- assets/sample-tank.raw", "git log --oneline --diff-filter=D -- assets/sample-tank.raw", "git log --oneline --all -- assets/sample-tank.raw"],
+      "verify": [
+        { "cmd": "git log --oneline --all -- assets/sample-tank.raw", "lines": 2,
+          "label": "two commits touch the file: the add and the delete" }
+      ]
+    },
+    {
+      "title": "Prove garbage collection will not save you",
+      "why": "`gc` only removes unreachable objects. This blob is reachable from a commit on main, so it is not garbage — it is history. Nothing short of rewriting that commit removes it.",
+      "commands": ["git count-objects -vH", "git gc --prune=now --quiet", "git count-objects -vH"],
+      "expect": "Barely any change: the blob is reachable and therefore kept.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --objects --all | grep -c sample-tank.raw'", "equals": "1",
+          "label": "the blob is still reachable after gc",
+          "hint": "gc removes unreachable objects only — this one is in a commit" }
+      ]
+    },
+    {
+      "title": "See what a clone actually costs",
+      "why": "A fresh clone downloads the whole reachable object set, including the blob nobody wants. Every colleague, every CI run, every container build pays for it.",
+      "commands": ["sh -c 'git clone -q \"file://$(pwd)\" ../fresh'", "sh -c 'cd ../fresh && git count-objects -vH'", "sh -c 'cd ../fresh && ls'"],
+      "expect": "The clone is large despite the working tree being small."
+    },
+    {
+      "title": "Set up what should have happened: LFS-style pointers",
+      "why": "Git LFS replaces a big file with a small text pointer in git, storing the bytes elsewhere. `.gitattributes` marks which paths are handled that way — the mechanism is exactly the filter system git already has.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "# Binary captures go to LFS, never into the object database.\nassets/**/*.raw filter=lfs diff=lfs merge=lfs -text\n*.psd filter=lfs diff=lfs merge=lfs -text\n*.mp4 filter=lfs diff=lfs merge=lfs -text\n" } }
+      ],
+      "commands": ["git add .gitattributes", "git commit -q -m \"Route binary assets through LFS\"", "cat .gitattributes", "git check-attr filter -- assets/sample-tank.raw"],
+      "expect": "check-attr reports filter: lfs for that path.",
+      "verify": [
+        { "cmd": "git check-attr filter -- assets/sample-tank.raw", "contains": "lfs",
+          "label": "large binaries are routed to LFS from now on",
+          "hint": "add an LFS filter rule to .gitattributes" }
+      ]
+    },
+    {
+      "title": "Know the only real cure",
+      "why": "Removing an existing blob means rewriting every commit that contains it — `git filter-repo`, new shas, a force push, and every clone re-made. Prevention through .gitattributes and a pre-commit size check is enormously cheaper.",
+      "commands": ["git log --oneline", "git count-objects -vH"],
+      "expect": "Nothing rewritten here — the rewriting category covers that operation properly."
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git rev-list --objects --all | grep -c sample-tank.raw'", "equals": "1",
+      "label": "the large blob is still in history, as expected",
+      "hint": "deleting a file does not remove it from past commits" },
+    { "cmd": "git ls-files", "not_contains": "sample-tank.raw",
+      "label": "…even though it is not in the current tree" },
+    { "cmd": "git check-attr filter -- assets/sample-tank.raw", "contains": "lfs",
+      "label": "an LFS rule now covers that path for future commits",
+      "hint": "commit a .gitattributes with filter=lfs rules" },
+    { "cmd": "git ls-files", "contains": ".gitattributes",
+      "label": "the rule is committed so it applies to everyone" }
+  ],
+  "pitfalls": [
+    "`git rm` and `git gc` do not shrink a repository whose blob is reachable from history. Only a rewrite does.",
+    "Adding LFS afterwards protects future commits only; existing blobs stay until history is rewritten with `git lfs migrate` or `git filter-repo`.",
+    "Without the LFS client installed, a checkout gives you pointer text files instead of content. Everyone on the project needs it.",
+    "A pre-commit hook rejecting files over a few megabytes prevents the entire problem for the cost of ten lines of shell."
+  ],
+  "cheatsheet": [
+    ["git count-objects -vH", "repository size on disk"],
+    ["git rev-list --objects --all", "every object with its path"],
+    ["git cat-file --batch-check", "type and size for piped object ids"],
+    ["git log --diff-filter=A -- <path>", "which commit introduced a file"],
+    ["git check-attr filter -- <path>", "is this path routed through LFS"],
+    ["git lfs migrate import --include='*.raw'", "convert existing history to LFS"],
+    ["git gc --prune=now", "removes unreachable objects only"]
+  ]
+}
