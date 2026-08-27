@@ -1,0 +1,126 @@
+{
+  "id": "stash-across-branches",
+  "title": "Move work to the branch it should have been on",
+  "category": "stash",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 12,
+  "summary": "You wrote an hour of code on main by accident, before committing anything. Stash is the cleanest way to move it — and it works because a stash belongs to no branch at all.",
+  "concepts": ["stashes are branch-agnostic", "apply on a different branch", "stash show --stat", "multiple stashes", "stash@{n}"],
+  "mental_model": "A stash records your changes plus the commit you were on, but nothing ties it to a branch. Popping it somewhere else is a three-way merge against that branch — usually clean, occasionally a conflict, never a copy-paste.",
+  "danger": "Popping a stash that contains an untracked file the target branch already tracks fails outright. Stash moves changes between branches, it does not overwrite them.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add controller" } },
+    { "run": "git switch -q -c feature/pump-tuning" },
+    { "write": { "path": "tuning.md", "content": "# Tuning\n\nNotes on impeller settings.\n" } },
+    { "commit": { "message": "Start the tuning notes" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\nRAMP_SECONDS = 5\n\n\ndef calibrate(factor):\n    \"\"\"An hour of work, written on the wrong branch.\"\"\"\n    return RPM * factor\n" } },
+    { "write": { "path": "calibration.md", "content": "# Calibration notes\n\nMeasured against the reference impeller.\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Notice the mistake before committing",
+      "why": "You are on main, with a modified file and a new one that both belong on feature/pump-tuning. Nothing is committed yet, so this is a working-tree problem — the easiest kind to fix.",
+      "commands": ["git status --short", "git rev-parse --abbrev-ref HEAD", "git branch -v"],
+      "expect": "pump.py modified, calibration.md untracked, on main."
+    },
+    {
+      "title": "Stash it with a message that says where it belongs",
+      "why": "`-u` includes the new file. The message matters more than usual here: you are about to switch branches, and a stash called 'WIP on main' tells you nothing when you come back to it.",
+      "commands": ["git stash push -u -m \"pump calibration — belongs on feature/pump-tuning\"", "git status --short", "git stash list", "ls"],
+      "expect": "Clean tree on main, one clearly labelled stash.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "main is clean again" },
+        { "cmd": "git stash list", "contains": "belongs on feature/pump-tuning",
+          "label": "the stash says where it should go" }
+      ]
+    },
+    {
+      "title": "Look before you leap",
+      "why": "`stash show --stat` prints the shape of the change and `-p` the full diff, both without touching your working tree. Confirm this is what you meant to move, and that nothing in it collides with the target branch.",
+      "commands": ["git stash show --stat stash@{0}", "git stash show -p -u stash@{0}", "git ls-tree -r feature/pump-tuning --name-only"],
+      "expect": "Two files in the stash, neither of which the target branch tracks under a conflicting name."
+    },
+    {
+      "title": "Switch and pop",
+      "why": "The stash is not bound to main — popping it on the feature branch performs a three-way merge against this branch's content. It applies cleanly here because both branches share the same base version of pump.py.",
+      "commands": ["git switch feature/pump-tuning", "git stash pop", "git status --short", "cat pump.py", "git stash list"],
+      "expect": "Both changes land on the feature branch, and the stash list is empty.",
+      "verify": [
+        { "cmd": "cat pump.py", "contains": "def calibrate",
+          "label": "the work arrived on the feature branch",
+          "hint": "git stash pop after switching" },
+        { "cmd": "git stash list", "empty": true, "label": "a clean pop consumes the entry" }
+      ]
+    },
+    {
+      "title": "Commit it where it belongs",
+      "why": "The whole manoeuvre took four commands and left no trace. main never saw the change, and history reads as though you had been on the right branch all along.",
+      "commands": ["git add -A", "git commit -q -m \"Add pump calibration and notes\"", "git log --oneline", "git switch main", "git log --oneline", "ls"],
+      "expect": "Three commits on the feature branch, one on main, and no calibration file on main.",
+      "verify": [
+        { "cmd": "git log --oneline main", "lines": 1, "label": "main was never touched" },
+        { "cmd": "git log --oneline feature/pump-tuning", "lines": 3,
+          "label": "the work is committed on the feature branch" }
+      ]
+    },
+    {
+      "title": "Several stashes at once",
+      "why": "The list is a stack: `stash@{0}` is the newest. You can apply any entry by name, in any order — useful when you have parked two unrelated experiments.",
+      "actions": [
+        { "write": { "path": "app.py", "content": "print('reef controller — experiment A')\n" } },
+        { "run": "git stash push -m \"experiment A\"" },
+        { "write": { "path": "app.py", "content": "print('reef controller — experiment B')\n" } },
+        { "run": "git stash push -m \"experiment B\"" }
+      ],
+      "commands": ["git stash list", "git stash show -p stash@{1}", "git stash apply stash@{1}", "cat app.py", "git status --short"],
+      "expect": "The older experiment applied by name, while both entries stay in the list.",
+      "verify": [
+        { "cmd": "cat app.py", "contains": "experiment A",
+          "label": "an older stash was applied by index",
+          "hint": "git stash apply stash@{1}" },
+        { "cmd": "git stash list", "lines": 2, "label": "apply leaves both entries in place" }
+      ]
+    },
+    {
+      "title": "Clean up deliberately",
+      "why": "Restore the working tree, then drop what you no longer need. Stashes left lying around for weeks are the reason people distrust the feature.",
+      "commands": ["git restore app.py", "git stash drop stash@{0}", "git stash drop stash@{0}", "git stash list", "git status --short"],
+      "verify": [
+        { "cmd": "git stash list", "empty": true, "label": "no stashes left behind" },
+        { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show feature/pump-tuning:pump.py", "contains": "def calibrate",
+      "label": "the misplaced work ended up on the feature branch",
+      "hint": "stash -u on main, switch, then pop" },
+    { "cmd": "git ls-tree -r main --name-only", "not_contains": "calibration.md",
+      "label": "main never received it" },
+    { "cmd": "git log --oneline main", "lines": 1,
+      "label": "main has exactly its original commit" },
+    { "cmd": "git stash list", "empty": true, "label": "no stashes were abandoned" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean working tree" }
+  ],
+  "pitfalls": [
+    "A stash applied to a branch with different content is a three-way merge, so it can conflict. It is not a copy — read `git stash show -p` first when the branches have diverged.",
+    "An untracked file in the stash whose name the target branch already tracks makes the pop fail outright. Check with `git ls-tree` before switching.",
+    "`git stash` without `-u` leaves new files behind on the wrong branch, where they quietly get committed later.",
+    "Stash entries renumber every time you push or drop one. Never rely on a remembered index; check `git stash list` each time.",
+    "If the work is more than an hour old, prefer a WIP commit on a scratch branch. Stashes are invisible to `git log`, are never pushed, and are easy to forget."
+  ],
+  "cheatsheet": [
+    ["git stash push -u -m \"note\"", "park everything with a label"],
+    ["git stash show --stat stash@{0}", "the shape of a stash"],
+    ["git stash show -p -u stash@{0}", "its full diff, untracked files included"],
+    ["git stash pop", "apply the newest and remove it"],
+    ["git stash apply stash@{n}", "apply a specific entry, keep it listed"],
+    ["git stash drop stash@{n}", "delete one entry"],
+    ["git stash list", "the stack, newest first"]
+  ]
+}

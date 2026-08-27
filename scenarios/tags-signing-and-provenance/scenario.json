@@ -1,0 +1,140 @@
+{
+  "id": "tags-signing-and-provenance",
+  "title": "Who cut this release? Signatures and provenance.",
+  "category": "tags",
+  "level": "expert",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Hashes prove history is internally consistent; they prove nothing about who made it. Read the verification fields, set up signing, and understand what a green tick actually asserts.",
+  "concepts": ["%G? verification status", "signed tags vs signed commits", "gpg.format ssh", "allowedSignersFile", "verify-tag", "what a signature proves"],
+  "mental_model": "A signature binds a commit or tag to a key. Verification answers two separate questions: is the signature valid, and do I trust the key? Git answers the first; the second is your allowed-signers list, and no tool can do it for you.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "VERSION = '3.0.0'\n" } },
+    { "commit": { "message": "Release 3.0.0" } },
+    { "run": "git tag -a v3.0.0 -m \"Release 3.0.0\"" },
+    { "write": { "path": "payments.py", "content": "def charge(amount):\n    return amount\n" } },
+    { "commit": { "message": "Add payment handling" } }
+  ],
+  "steps": [
+    {
+      "title": "Ask git whether anything is signed",
+      "why": "`%G?` reports the verification status of each commit: N for none, G for a good signature, B for bad, U for good-but-untrusted. Right now everything is N — which is the honest default for most repositories.",
+      "commands": ["git log --format='%h %G? %s'", "git log --format='%h signer=%GS key=%GK %s'"],
+      "expect": "N for every commit, with no signer.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%G? | sort -u | tr -d \"\\n\"'", "equals": "N",
+          "label": "nothing is signed yet" }
+      ]
+    },
+    {
+      "title": "See what an annotated tag records without a signature",
+      "why": "The tag object names a tagger and a date, which is provenance of a sort — but it is self-asserted. Anyone can set `user.name` to yours and produce an identical-looking tag.",
+      "commands": ["git cat-file -p v3.0.0", "git verify-tag v3.0.0"],
+      "expect": "A tagger line, and verify-tag failing because there is no signature to verify.",
+      "verify": [
+        { "cmd": "git cat-file -p v3.0.0", "contains": "tagger",
+          "label": "the tag records a self-asserted tagger" }
+      ]
+    },
+    {
+      "title": "Prove the tagger field is not evidence",
+      "why": "Create a tag claiming to be someone else. Git accepts it without complaint, because the field is just text. This is precisely the gap signatures exist to close.",
+      "actions": [
+        { "run": "git tag -a v3.0.0-impostor -m \"Release by someone else\"",
+          "env": { "GIT_COMMITTER_NAME": "Release Manager", "GIT_COMMITTER_EMAIL": "release@example.com" } }
+      ],
+      "commands": ["sh -c 'git cat-file -p v3.0.0-impostor | head -4'", "git tag -n"],
+      "expect": "A tag attributed to a name you simply typed.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -p v3.0.0-impostor | grep -c \"Release Manager\"'", "equals": "1",
+          "label": "the tagger field can be set to anything at all" }
+      ]
+    },
+    {
+      "title": "Configure signing",
+      "why": "`gpg.format ssh` lets git sign with an SSH key, which most people already have and which needs no keyring. Setting `tag.gpgSign` and `commit.gpgsign` makes it automatic rather than something you remember.",
+      "actions": [
+        { "run": "sh -c 'mkdir -p .keys && ssh-keygen -q -t ed25519 -N \"\" -C \"learner@shakha.local\" -f .keys/signing 2>/dev/null || echo \"ssh-keygen unavailable\"'" },
+        { "run": "git config gpg.format ssh" },
+        { "run": "sh -c 'test -f .keys/signing && git config user.signingkey \"$(pwd)/.keys/signing.pub\" || true'" },
+        { "run": "git config tag.gpgSign true" }
+      ],
+      "commands": ["git config --get gpg.format", "git config --get tag.gpgSign", "sh -c 'ls .keys 2>/dev/null || echo \"no key generated\"'"],
+      "expect": "ssh as the format, signing enabled for tags.",
+      "verify": [
+        { "cmd": "git config --get gpg.format", "equals": "ssh",
+          "label": "git is configured to sign with an SSH key",
+          "hint": "git config gpg.format ssh" },
+        { "cmd": "git config --get tag.gpgSign", "equals": "true",
+          "label": "tags will be signed automatically" }
+      ]
+    },
+    {
+      "title": "Build the allowed-signers list",
+      "why": "A valid signature only tells you the holder of some key made it. `allowedSignersFile` maps an identity to a public key, and it is the file that turns 'valid' into 'valid AND from someone we trust'.",
+      "actions": [
+        { "run": "sh -c 'test -f .keys/signing.pub && printf \"learner@shakha.local %s\\n\" \"$(cat .keys/signing.pub)\" > .keys/allowed_signers || printf \"learner@shakha.local ssh-ed25519 AAAA-placeholder\\n\" > .keys/allowed_signers'" },
+        { "run": "sh -c 'git config gpg.ssh.allowedSignersFile \"$(pwd)/.keys/allowed_signers\"'" }
+      ],
+      "commands": ["sh -c 'cat .keys/allowed_signers | cut -c1-60'", "git config --get gpg.ssh.allowedSignersFile"],
+      "verify": [
+        { "cmd": "sh -c 'grep -c learner@shakha.local .keys/allowed_signers'", "equals": "1",
+          "label": "an allowed-signers entry exists",
+          "hint": "map the identity to its public key" }
+      ]
+    },
+    {
+      "title": "Cut a signed release",
+      "why": "With signing configured, the tag carries a signature block. `verify-tag` now checks it against the allowed signers and reports the identity — the whole point of the exercise.",
+      "actions": [
+        { "run": "sh -c 'git tag -s -m \"Release 3.1.0, signed\" v3.1.0 2>/dev/null || git tag -a -m \"Release 3.1.0\" v3.1.0'" }
+      ],
+      "commands": ["sh -c 'git cat-file -p v3.1.0 | head -8'", "sh -c 'git verify-tag v3.1.0 2>&1 | head -3'", "git tag -n"],
+      "expect": "A SIGNATURE block in the tag object, and verify-tag naming the signer.",
+      "verify": [
+        { "cmd": "git tag", "contains": "v3.1.0", "label": "the release tag exists" }
+      ]
+    },
+    {
+      "title": "Read the verification status of the whole history",
+      "why": "`%G?` across the log is the audit view. In a repository that requires signing, anything showing N or U is what a reviewer should look at — and a forge's green tick is exactly this check, run for you.",
+      "commands": ["git log --format='%h %G? %GS %s'", "sh -c 'git for-each-ref --format=\"%(refname:short) %(objecttype)\" refs/tags'", "git tag -d v3.0.0-impostor"],
+      "expect": "The signing status per commit, and the impostor tag deleted.",
+      "verify": [
+        { "cmd": "git tag", "not_contains": "impostor",
+          "label": "the unsigned impostor tag was removed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get gpg.format", "equals": "ssh",
+      "label": "signing is configured with an SSH key",
+      "hint": "git config gpg.format ssh, plus user.signingkey" },
+    { "cmd": "git config --get tag.gpgSign", "equals": "true",
+      "label": "tags are signed by default" },
+    { "cmd": "sh -c 'grep -c learner@shakha.local .keys/allowed_signers'", "equals": "1",
+      "label": "an allowed-signers file maps the identity to a key",
+      "hint": "a valid signature is not the same as a trusted one" },
+    { "cmd": "git tag", "contains": "v3.1.0", "label": "a release tag was cut with signing enabled" },
+    { "cmd": "git tag", "not_contains": "impostor",
+      "label": "the tag with a forged tagger field was deleted" }
+  ],
+  "pitfalls": [
+    "The tagger and author fields are free text. Without a signature they are a claim, not evidence — and they are trivial to set to anyone's name.",
+    "A valid signature proves a key made it, nothing more. Trust comes from the allowed-signers file or from the forge's key-to-account mapping.",
+    "`gpg.format ssh` needs git 2.34+ and an ssh-keygen that supports `-Y`. GPG remains the older, more widely supported route.",
+    "Signing every commit is noisy and rarely useful; signing release tags is where the value is, because that is what people download and deploy.",
+    "The allowed-signers file must be shared with the team, but the private key must not. Commit the former, never the latter — and note this scenario keeps its throwaway key inside the sandbox."
+  ],
+  "cheatsheet": [
+    ["git log --format='%h %G? %GS'", "verification status and signer per commit"],
+    ["git cat-file -p <tag>", "see the signature block in a tag object"],
+    ["git config gpg.format ssh", "sign with an SSH key instead of GPG"],
+    ["git config user.signingkey <path.pub>", "which key to sign with"],
+    ["git config tag.gpgSign true", "sign every annotated tag"],
+    ["git tag -s -m \"...\" v1.0.0", "sign one tag explicitly"],
+    ["git verify-tag <tag> / git verify-commit <sha>", "check a signature"],
+    ["git config gpg.ssh.allowedSignersFile <path>", "who you are willing to trust"]
+  ]
+}

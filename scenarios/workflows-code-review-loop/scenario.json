@@ -1,0 +1,147 @@
+{
+  "id": "workflows-code-review-loop",
+  "title": "Two rounds of review without losing the reviewer's place",
+  "category": "workflows",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 15,
+  "summary": "Push, get comments, respond, get more comments, respond again, then land it clean. The whole argument about force-pushing during review, settled by looking at what each option does to the diff.",
+  "concepts": ["review commits vs amending", "range-diff", "force-with-lease during review", "autosquash before merge", "what reviewers actually see"],
+  "mental_model": "During review, extra commits are kind to the reviewer — they can see just what changed since last time. Before merging, a clean series is kind to everyone afterwards. Do the first during, the second at the end.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "orders.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n" } },
+    { "commit": { "message": "Add order totals" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true }
+  ],
+  "steps": [
+    {
+      "title": "Open the review",
+      "why": "Two commits, each doing one thing, pushed to a branch. That push is the pull request; everything after it is conversation.",
+      "actions": [
+        { "run": "git switch -q -c feature/discounts" },
+        { "write": { "path": "orders.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n\n\ndef discount(amount, percent):\n    return amount * (1 - percent / 100)\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add discount calculation\"" },
+        { "write": { "path": "orders.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n\n\ndef discount(amount, percent):\n    return amount * (1 - percent / 100)\n\n\ndef total_with_discount(items, percent):\n    return discount(total(items), percent)\n" } },
+        { "run": "git commit -q -a -m \"Apply discounts to order totals\"" },
+        { "run": "git push -q -u origin feature/discounts" }
+      ],
+      "commands": ["git log --oneline main..HEAD", "git diff --stat main...HEAD", "git branch -vv"],
+      "verify": [
+        { "cmd": "git log --oneline main..feature/discounts", "lines": 2,
+          "label": "two commits are up for review" }
+      ]
+    },
+    {
+      "title": "The reviewer reads it in their own clone",
+      "why": "Fetching the branch and reading the three-dot diff is what the web interface shows, minus the comment boxes. Reviewing commit by commit — `git log -p` — is usually faster than reading one combined diff.",
+      "cwd": "teammate",
+      "commands": ["git fetch -q origin", "git log --oneline origin/main..origin/feature/discounts", "git diff --stat origin/main...origin/feature/discounts", "sh -c 'git show origin/feature/discounts:orders.py'"],
+      "expect": "The branch's two commits and the resulting file."
+    },
+    {
+      "title": "Round one: respond with a new commit",
+      "why": "The reviewer wants validation. Adding a commit — rather than amending — means their next look is a two-line diff instead of the whole branch again. This is the single most useful courtesy in code review.",
+      "actions": [
+        { "write": { "path": "orders.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n\n\ndef discount(amount, percent):\n    if not 0 <= percent <= 100:\n        raise ValueError('percent must be between 0 and 100')\n    return amount * (1 - percent / 100)\n\n\ndef total_with_discount(items, percent):\n    return discount(total(items), percent)\n" } },
+        { "run": "git commit -q -a -m \"Validate the discount percentage\"" },
+        { "run": "git push -q origin feature/discounts" }
+      ],
+      "commands": ["git log --oneline main..HEAD", "git status -sb"],
+      "expect": "Three commits, pushed as an ordinary fast-forward — no force needed.",
+      "verify": [
+        { "cmd": "git log --oneline main..feature/discounts", "lines": 3,
+          "label": "the response is a visible third commit" }
+      ]
+    },
+    {
+      "title": "The reviewer sees exactly what changed",
+      "why": "Because nothing was rewritten, the reviewer can diff their last-seen tip against the new one. Two lines to re-review instead of eighty — and this is impossible if you amended.",
+      "cwd": "teammate",
+      "commands": ["sh -c 'old=$(git rev-parse origin/feature/discounts); git fetch -q origin; git diff --stat $old origin/feature/discounts; git log --oneline $old..origin/feature/discounts'"],
+      "expect": "One new commit and a tiny diff."
+    },
+    {
+      "title": "Round two: a fixup aimed at the right commit",
+      "why": "The second comment is about the second commit, not the tip. `--fixup` labels the response so it can be folded into the correct commit later, while still being an ordinary visible commit right now. Note which function it touches: a fixup whose diff overlaps lines added by a LATER commit conflicts when autosquash reorders it, so aim it at code the later commits leave alone.",
+      "actions": [
+        { "write": { "path": "orders.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n\n\ndef discount(amount, percent):\n    if not 0 <= percent <= 100:\n        raise ValueError('percent must be between 0 and 100')\n    return amount * (1 - percent / 100)\n\n\ndef total_with_discount(items, percent):\n    \"\"\"Order total after discount, rounded to the nearest penny.\"\"\"\n    return round(discount(total(items), percent), 2)\n" } },
+        { "run": "git add -A" },
+        { "run": "sh -c 'git commit -q --fixup=$(git log --format=%H --grep=\"Apply discounts to order totals\" -1)'" },
+        { "run": "git push -q origin feature/discounts" }
+      ],
+      "commands": ["git log --oneline main..HEAD", "git log --format=%s -1"],
+      "expect": "A commit literally titled 'fixup! Apply discounts to order totals'.",
+      "verify": [
+        { "cmd": "git log --format=%s main..feature/discounts", "contains": "fixup! Apply discounts to order totals",
+          "label": "the second response is labelled against its target commit" }
+      ]
+    },
+    {
+      "title": "Approved — now tidy the series",
+      "why": "With review finished, autosquash folds each response into the commit it answered. The reviewer's ability to follow the conversation is no longer needed; the next reader's ability to follow the history is.",
+      "actions": [
+        { "run": "sh -c 'git branch review-tip-backup feature/discounts'" },
+        { "run": "git rebase -i --autosquash main",
+          "env": { "GIT_SEQUENCE_EDITOR": "true", "GIT_EDITOR": "true" } }
+      ],
+      "commands": ["git log --oneline main..HEAD", "cat orders.py"],
+      "expect": "Three commits again, with no fixup markers, and every review response folded in.",
+      "verify": [
+        { "cmd": "git log --format=%s main..feature/discounts", "not_contains": "fixup!",
+          "label": "no review-noise commits remain" },
+        { "cmd": "git show feature/discounts:orders.py", "contains": ["rounded to the nearest penny", "percent must be between"],
+          "label": "both review responses survived the squash" }
+      ]
+    },
+    {
+      "title": "Prove the tidy-up changed nothing but the history",
+      "why": "`range-diff` compares two versions of a branch commit by commit. Here it shows the same changes arranged differently — the check that makes a pre-merge cleanup safe to do without a second review.",
+      "commands": ["git range-diff main review-tip-backup feature/discounts", "sh -c 'git diff --stat review-tip-backup feature/discounts'"],
+      "expect": "An empty file diff: identical trees, cleaner series.",
+      "verify": [
+        { "cmd": "git diff --name-only review-tip-backup feature/discounts", "empty": true,
+          "label": "the cleanup produced identical code",
+          "hint": "range-diff is how you prove a rewrite is honest" }
+      ]
+    },
+    {
+      "title": "Publish and merge",
+      "why": "The rewrite needs `--force-with-lease`, which is safe here because review is over and the branch is yours. Then an ordinary merge, and the branch is deleted.",
+      "commands": ["git push --force-with-lease origin feature/discounts", "git switch main", "git merge --no-ff -m \"Merge discounts\" feature/discounts", "git push origin main", "git branch -d feature/discounts review-tip-backup", "git push origin --delete feature/discounts", "git log --oneline --graph -5"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Add discount calculation",
+          "label": "the tidied branch was merged and pushed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show main:orders.py", "contains": ["rounded to the nearest penny", "percent must be between", "total_with_discount"],
+      "label": "every review response is in the merged code",
+      "hint": "respond with commits, then autosquash before merging" },
+    { "cmd": "git log --format=%s main", "not_contains": "fixup!",
+      "label": "no review-noise commits reached main" },
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 5,
+      "label": "the server has the merge and the tidied series" },
+    { "cmd": "git branch -a", "not_contains": "feature/discounts",
+      "label": "the branch was cleaned up locally and on the server" }
+  ],
+  "pitfalls": [
+    "Amending during review destroys the reviewer's place in the diff. Add commits while the conversation is live; squash only when it is over.",
+    "Force-pushing a branch under review is the most common complaint reviewers have. If you must, say so in a comment — the tooling cannot tell them.",
+    "`git range-diff <base> <old-tip> <new-tip>` is the tool that makes a pre-merge rewrite reviewable. Almost nobody knows it exists.",
+    "Keep a backup branch before an autosquash. It costs one command and turns a bad rebase into a one-line recovery.",
+    "If your forge squashes on merge anyway, the tidy-up matters less — but the commit messages it discards were the only record of what review changed."
+  ],
+  "cheatsheet": [
+    ["git push -u origin <branch>", "open the review"],
+    ["git commit -m \"...\" && git push", "respond with a visible commit"],
+    ["git commit --fixup=<sha>", "respond, labelled against an earlier commit"],
+    ["git diff <last-seen> <new-tip>", "what a reviewer must re-read"],
+    ["git rebase -i --autosquash <base>", "fold the responses in when review ends"],
+    ["git range-diff <base> <old> <new>", "prove the rewrite changed nothing"],
+    ["git push --force-with-lease", "publish the tidied branch safely"]
+  ]
+}

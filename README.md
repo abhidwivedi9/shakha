@@ -7,7 +7,7 @@ Every scenario builds an actual repository on disk. The step buttons run actual
 actual files, and the checks grade the repo state — not which buttons you pressed.
 There is no simulation layer anywhere in this project.
 
-**106 scenarios across all 20 categories. All 106 pass their own checks.**
+**111 scenarios across all 20 categories. All 111 pass their own checks.**
 
 ```
 python shakhactl.py dashboard          # http://127.0.0.1:4100
@@ -77,30 +77,30 @@ against a real forge, because there is no difference.
 ## Coverage
 
 | # | Category | Scenarios | Covers |
-|---|---|---:|---|
+|---:|---|---:|---|
 | 1 | Setup & config | 6 | init, clone anatomy, config precedence, gitignore, CRLF, aliases |
-| 2 | Snapshots | 7 | the three diffs, amend, restore, rm/mv, clean, `-a` trap, file recovery |
-| 3 | The index | 5 | stage-then-edit, hunk staging, four ways to unstage, `-N`, the index file |
-| 4 | History | 7 | log formats, pickaxe, blame, ranges, shortlog, file lifecycle, trailers |
+| 2 | Snapshots: add, commit, diff | 7 | the three diffs, amend, restore, rm/mv, clean, the `-a` trap, file recovery |
+| 3 | The index, in depth | 5 | stage-then-edit, hunk staging, four ways to unstage, `-N`, the index file itself |
+| 4 | History & inspection | 7 | log formats, pickaxe, blame, ranges, shortlog, file lifecycle, trailers |
 | 5 | Branching | 6 | ff vs no-ff, detached HEAD, rename/delete/recover, `--contains`, hotfix branches |
-| 6 | Merging | 5 | first conflict, abort and `-X`/`-s`, modify/delete, rerere, squash vs merge |
+| 6 | Merging & conflicts | 5 | first conflict, abort and `-X`/`-s`, modify/delete, rerere, squash vs merge |
 | 7 | Rebase | 6 | interactive cleanup, `--onto`, conflict recovery, autosquash, splitting, stacks |
 | 8 | Remotes | 7 | tracking, prune, push rejection, `--force-with-lease`, forks, refspecs |
 | 9 | Undo & recovery | 6 | reflog rescue, revert, reverting a merge, wrong branch, fsck, dangling blobs |
-| 10 | Stash | 4 | basics with `-u`, conflicts and `stash branch`, `--keep-index`, recovery |
-| 11 | Tags | 4 | lightweight vs annotated, publishing, describe, the cost of retagging |
-| 12 | Cherry-pick | 4 | backporting, conflicts, format-patch/am, cherry-picking a merge |
-| 13 | Scale | 5 | worktrees, submodules, sparse-checkout, shallow vs partial, large files |
-| 14 | Hooks | 5 | pre-commit, commit-msg, server-side pre-receive, pre-push, the post-* family |
-| 15 | Team workflows | 4 | GitHub flow, git flow, trunk-based, long-branch sync |
-| 16 | Rewriting | 4 | purging a secret, author identity, force-push fallout, extracting a subdirectory |
-| 17 | Forensics | 5 | bisect, `bisect run`, reflog timelines, repo integrity, gc |
-| 18 | Internals | 5 | plumbing commits, the four object types, refs, packfiles, the hash chain |
-| 19 | Real incidents | 6 | merge ate my code, oversized push, force push over main, lockfiles, unrelated histories |
-| 20 | Release & CI | 5 | changelogs, monorepo path filters, detached HEAD in CI, semver, verifying deploys |
+| 10 | Stash | 5 | basics with `-u`, conflicts and `stash branch`, `--keep-index`, recovery, cross-branch |
+| 11 | Tags & releases | 5 | lightweight vs annotated, publishing, describe, retagging damage, signing |
+| 12 | Cherry-pick & patches | 5 | backporting, conflicts, format-patch/am, cherry-picking a merge, backport audits |
+| 13 | Submodules, worktrees, scale | 5 | worktrees, submodules, sparse-checkout, shallow vs partial, large files |
+| 14 | Hooks & automation | 5 | pre-commit, commit-msg, server-side pre-receive, pre-push, the post-* family |
+| 15 | Team workflows | 5 | GitHub flow, git flow, trunk-based, long-branch sync, the review loop |
+| 16 | Rewriting history | 5 | purging a secret, author identity, force-push fallout, subdirectory extraction, truncation |
+| 17 | Forensics & debugging | 5 | bisect, `bisect run`, reflog timelines, repo integrity, gc and maintenance |
+| 18 | Git internals | 5 | plumbing commits, the four object types, refs, packfiles, the hash chain |
+| 19 | Real-world incidents | 6 | merge ate my code, oversized push, force push over main, lockfiles, unrelated histories |
+| 20 | Release & CI/CD git | 5 | changelogs, monorepo path filters, detached HEAD in CI, semver, verifying deploys |
 
-24 beginner, 37 intermediate, 29 advanced, 16 expert. 731 runnable steps and
-469 final checks in total.
+24 beginner, 39 intermediate, 30 advanced, 18 expert. 767 runnable steps and
+493 final checks in total.
 
 ## Testing the catalog
 
@@ -123,10 +123,11 @@ Create `scenarios/<ID>/scenario.json`. No server code changes. See
 - **M0 — sandbox engine** ✅ real git execution, path guard, repo-state extractor
 - **M1 — dashboard shell** ✅ catalog, lesson pane, commit graph, refs, reflog
 - **M2 — the full loop** ✅ step buttons, free terminal, file editor, grading, progress
-- **M3–M6 — the catalog** ✅ all 20 categories, 106 scenarios, all passing
+- **M3–M6 — the catalog** ✅ all 20 categories, 111 scenarios, all passing
+- **M7 — navigation** ✅ level filters, unsolved-only, progress bar, generated cheatsheet
 
-Next: search and filtering in the catalog pane, per-category progress summaries,
-and a printable cheatsheet built from the scenarios you have solved.
+Next: `explain.md` long-form notes for the expert scenarios, and a spaced-repetition
+mode that resurfaces scenarios you solved a while ago.
 
 ## Licence
 

@@ -1,0 +1,47 @@
+name: scenarios
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  catalog:
+    name: every scenario solves itself
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Show the git version under test
+        run: git --version
+
+      - name: Catalog loads and the toolchain is sane
+        run: python shakhactl.py doctor
+
+      - name: Every scenario's own steps must solve it
+        run: python tools/test_scenarios.py
+
+      - name: The dashboard serves the whole catalog
+        run: |
+          python shakhactl.py dashboard --port 4100 --no-open &
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4100/api/catalog > /tmp/catalog.json; then break; fi
+            sleep 1
+          done
+          python - <<'PY'
+          import json
+          with open('/tmp/catalog.json') as handle:
+              data = json.load(handle)
+          print('scenarios served:', data['total'])
+          assert data['total'] > 0, 'the dashboard served an empty catalog'
+          assert len(data['categories']) == 20, 'expected 20 categories'
+          populated = [c['key'] for c in data['categories'] if c['scenarios']]
+          assert len(populated) == 20, 'empty categories: %s' % (
+              [c['key'] for c in data['categories'] if not c['scenarios']],)
+          PY

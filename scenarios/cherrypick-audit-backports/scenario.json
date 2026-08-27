@@ -1,0 +1,144 @@
+{
+  "id": "cherrypick-audit-backports",
+  "title": "Audit three release branches for missing fixes",
+  "category": "cherrypick",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Security releases every quarter, three supported versions, and nobody is sure which branch has which fix. Build the audit that answers it, then backport what is missing.",
+  "concepts": ["git cherry", "patch ids", "log --grep on cherry-pick markers", "per-branch audit loops", "backport hygiene"],
+  "mental_model": "Reachability (`--contains`) and content (`git cherry`) answer different questions. For backport auditing you want content, because every backport has a different sha from the fix it copies.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "auth.py", "content": "def check(token):\n    return token == 'secret'\n" } },
+    { "write": { "path": "parser.py", "content": "def parse(text):\n    return text.split(',')\n" } },
+    { "commit": { "message": "Initial release" } },
+    { "run": "git switch -q -c release/1.0" },
+    { "write": { "path": "VERSION", "content": "1.0\n" } },
+    { "commit": { "message": "Cut release 1.0" } },
+    { "run": "git switch -q main" },
+    { "run": "git switch -q -c release/1.1" },
+    { "write": { "path": "VERSION", "content": "1.1\n" } },
+    { "commit": { "message": "Cut release 1.1" } },
+    { "run": "git switch -q main" },
+    { "run": "git switch -q -c release/1.2" },
+    { "write": { "path": "VERSION", "content": "1.2\n" } },
+    { "commit": { "message": "Cut release 1.2" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "auth.py", "content": "import hmac\n\n\ndef check(token, expected):\n    return hmac.compare_digest(token, expected)\n" } },
+    { "commit": { "message": "SECURITY: use constant-time token comparison" } },
+    { "write": { "path": "parser.py", "content": "def parse(text):\n    if len(text) > 10000:\n        raise ValueError('input too large')\n    return text.split(',')\n" } },
+    { "commit": { "message": "SECURITY: bound the parser input size" } },
+    { "write": { "path": "README.md", "content": "# Service\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "run": "git switch -q release/1.2" },
+    { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"constant-time\" main)'" },
+    { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"parser input size\" main)'" },
+    { "run": "git switch -q release/1.1" },
+    { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"constant-time\" main)'" },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "See the shape of the problem",
+      "why": "Two security fixes on main, three supported releases, and backports done at different times by different people. No amount of reading the graph tells you reliably what is missing.",
+      "commands": ["git log --oneline --graph --all --decorate", "git branch -v"],
+      "expect": "Three release branches at different states."
+    },
+    {
+      "title": "Watch --contains give the wrong answer",
+      "why": "The fixes were cherry-picked, so the copies have different shas. `--contains` reports only main, and would have you re-backporting fixes that are already there.",
+      "commands": ["sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"constant-time\" main)'", "sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"parser input\" main)'"],
+      "expect": "Only main for both — despite two branches already having the fixes.",
+      "verify": [
+        { "cmd": "sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"constant-time\" main) | wc -l'",
+          "equals": "1", "label": "reachability sees only main, because backports change the sha" }
+      ]
+    },
+    {
+      "title": "Ask the content question per branch",
+      "why": "`git cherry <upstream> <head>` compares patch ids. A `+` means the commit on the release branch has no equivalent upstream; the reverse direction is what tells you what the branch is missing.",
+      "commands": ["git cherry -v release/1.2 main", "git cherry -v release/1.1 main", "git cherry -v release/1.0 main"],
+      "expect": "1.2 is missing nothing security-related, 1.1 is missing the parser fix, 1.0 is missing both.",
+      "verify": [
+        { "cmd": "sh -c 'git cherry release/1.0 main | grep -c \"^+\"'", "not_empty": true,
+          "label": "the oldest release is missing commits by content" }
+      ]
+    },
+    {
+      "title": "Build the audit as a loop",
+      "why": "One command per branch, filtered to the commits that matter. This is the report you run before every security release, and it takes a second.",
+      "commands": ["sh -c 'for b in release/1.0 release/1.1 release/1.2; do echo \"== $b\"; git cherry $b main | grep \"^+\" | while read _ sha; do git log -1 --format=\"   MISSING %h %s\" $sha; done | grep SECURITY || echo \"   all security fixes present\"; done'"],
+      "expect": "A per-branch list naming exactly which security commits are absent."
+    },
+    {
+      "title": "Backport what 1.1 is missing",
+      "why": "One fix, one cherry-pick, `-x` for provenance. The audit told you precisely what to run, which is the difference between a backport process and guesswork.",
+      "actions": [
+        { "run": "git switch -q release/1.1" },
+        { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"parser input size\" main)'" }
+      ],
+      "commands": ["git log --oneline -3", "cat parser.py", "git cherry -v release/1.1 main"],
+      "verify": [
+        { "cmd": "git show release/1.1:parser.py", "contains": "input too large",
+          "label": "release/1.1 now has the parser fix",
+          "hint": "git cherry-pick -x the missing commit" }
+      ]
+    },
+    {
+      "title": "Backport both to the oldest release",
+      "why": "Order matters when fixes touch the same file; here they do not, so both apply cleanly. Cherry-picking oldest-first keeps the branch history in the same order as main.",
+      "actions": [
+        { "run": "git switch -q release/1.0" },
+        { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"constant-time\" main)'" },
+        { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"parser input size\" main)'" }
+      ],
+      "commands": ["git log --oneline", "cat auth.py", "cat parser.py"],
+      "verify": [
+        { "cmd": "git show release/1.0:auth.py", "contains": "compare_digest",
+          "label": "the oldest release has the auth fix" },
+        { "cmd": "git show release/1.0:parser.py", "contains": "input too large",
+          "label": "…and the parser fix" }
+      ]
+    },
+    {
+      "title": "Re-run the audit and prove it is clean",
+      "why": "Every branch reports no missing security commits. Because the check is by content, it stays correct however the backports were made — cherry-picked, hand-applied, or merged.",
+      "commands": ["sh -c 'for b in release/1.0 release/1.1 release/1.2; do printf \"%-14s \" $b; git cherry $b main | grep \"^+\" | while read _ sha; do git log -1 --format=%s $sha; done | grep -c SECURITY | sed \"s/^/missing security fixes: /\"; done'", "git switch main", "git log --oneline --graph --all --decorate | head -12"],
+      "expect": "Zero missing on every branch.",
+      "verify": [
+        { "cmd": "sh -c 'git cherry release/1.0 main | grep \"^+\" | while read _ s; do git log -1 --format=%s $s; done | grep -c SECURITY'",
+          "equals": "0", "allow_failure": true,
+          "label": "no security fix is missing from the oldest release" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show release/1.0:auth.py", "contains": "compare_digest",
+      "label": "release/1.0 received the auth fix",
+      "hint": "audit with git cherry, then cherry-pick -x what is missing" },
+    { "cmd": "git show release/1.0:parser.py", "contains": "input too large",
+      "label": "release/1.0 received the parser fix" },
+    { "cmd": "git show release/1.1:parser.py", "contains": "input too large",
+      "label": "release/1.1 received the fix it was missing" },
+    { "cmd": "git log --format=%B release/1.0", "contains": "cherry picked from commit",
+      "label": "the backports record where they came from",
+      "hint": "-x is what makes the audit trail readable later" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main", "label": "you finished on main" }
+  ],
+  "pitfalls": [
+    "`git branch --contains` is the wrong tool for backport auditing: every cherry-pick has a new sha, so it reports nothing.",
+    "`git cherry` compares patch ids, which survive cherry-picks and rebases — but a fix adapted during the backport has a different patch id and shows as missing.",
+    "Argument order is `git cherry <upstream> <head>`: the `+` lines are commits in head that have no equivalent upstream. Swap them to ask the other direction.",
+    "Cherry-pick oldest-first when backporting several commits, or later fixes conflict against a file the earlier fix has not touched yet.",
+    "Record backports with `-x`. Without it, a future audit cannot distinguish a backport from an independent change that happens to look similar."
+  ],
+  "cheatsheet": [
+    ["git cherry -v <upstream> <head>", "+ missing by content, - already present"],
+    ["git branch --contains <sha>", "reachability — wrong tool for backports"],
+    ["git cherry-pick -x <sha>", "backport, recording the origin"],
+    ["git log --grep='cherry picked from'", "find every backport in a branch"],
+    ["git show <sha> | git patch-id", "the content hash git cherry compares"],
+    ["git log -1 --format=%s <sha>", "turn an audit sha into a readable line"]
+  ]
+}

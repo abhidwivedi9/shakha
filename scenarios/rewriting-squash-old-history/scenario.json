@@ -1,0 +1,152 @@
+{
+  "id": "rewriting-squash-old-history",
+  "title": "Collapse five years of history into one starting commit",
+  "category": "rewriting",
+  "level": "expert",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "An imported repository has thousands of irrelevant commits before the part anyone cares about. Truncate the history to a single synthetic root, keeping every file — and understand what you are giving up.",
+  "concepts": ["commit-tree for a synthetic root", "rebase --onto a new root", "orphan branches", "shallow history", "what truncation destroys"],
+  "mental_model": "History is a chain of parents. To truncate it you build a new root commit holding the tree at your chosen cut-off, then replay everything after it onto that root. The files are identical; everything before the cut simply stops existing.",
+  "danger": "Truncation destroys blame, bisect and `log -S` for everything before the cut. Once the old objects are pruned, no command can answer 'why is this line here' about them again.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "legacy.py", "content": "# imported from subversion in 2019\nOLD = True\n" } },
+    { "commit": { "message": "Import from subversion" } },
+    { "run": "sh -c 'for i in $(seq 1 12); do printf \"# churn %d\\n\" $i >> legacy.py; git commit -q -a -m \"Legacy churn commit $i\"; done'" },
+    { "write": { "path": "app.py", "content": "print('the rewrite starts here')\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Start the modern rewrite\"" },
+    { "run": "git tag -a rewrite-start -m \"Where the interesting history begins\"" },
+    { "write": { "path": "app.py", "content": "print('the rewrite starts here')\n\n\ndef main():\n    return 0\n" } },
+    { "commit": { "message": "Add the entrypoint" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add dosing\"" }
+  ],
+  "steps": [
+    {
+      "title": "Measure what you are carrying",
+      "why": "Sixteen commits, thirteen of which are churn from an import nobody has read since. Count them before deciding — truncation is rarely worth it unless the ratio is stark.",
+      "commands": ["git log --oneline | wc -l", "git log --oneline", "git count-objects -vH", "git log --oneline rewrite-start..HEAD"],
+      "expect": "Sixteen commits, of which three are the part that matters.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "16",
+          "label": "the repository carries sixteen commits" }
+      ]
+    },
+    {
+      "title": "Back up before touching anything",
+      "why": "A branch on the current tip costs nothing and makes every step below reversible. For a truncation, also keep a full clone somewhere — this is the one rewrite you genuinely cannot undo after gc.",
+      "commands": ["git branch pre-truncate-backup", "sh -c 'git clone -q --mirror \"file://$(pwd)\" ../full-history-archive.git && echo archived'", "sh -c 'cd ../full-history-archive.git && git log --oneline main | wc -l'"],
+      "expect": "A mirror clone holding all sixteen commits, kept as the archive.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline main | wc -l'", "cwd": "full-history-archive.git", "equals": "16",
+          "label": "the full history is archived elsewhere",
+          "hint": "git clone --mirror before a truncation" }
+      ]
+    },
+    {
+      "title": "Build a synthetic root commit",
+      "why": "`commit-tree` with no `-p` makes a parentless commit holding a tree you choose. Here that tree is the cut-off point, so the new root contains every file exactly as it was then.",
+      "actions": [
+        { "run": "sh -c 'git commit-tree rewrite-start^{tree} -m \"Truncated history: everything before this is archived separately.\" > .git/new-root'" }
+      ],
+      "commands": ["sh -c 'cat .git/new-root'", "sh -c 'git cat-file -p $(cat .git/new-root)'", "sh -c 'git log --oneline $(cat .git/new-root)'"],
+      "expect": "A commit with a tree and NO parent line — a second root.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -p $(cat .git/new-root) | grep -c \"^parent\"'", "equals": "0",
+          "allow_failure": true,
+          "label": "the synthetic commit has no parent — it is a root" }
+      ]
+    },
+    {
+      "title": "Replay the modern history onto it",
+      "why": "`rebase --onto <new-root> rewrite-start main` moves the commits after the cut-off onto the new root. The commits before it are simply not in the range, so they are left behind.",
+      "actions": [
+        { "run": "sh -c 'git rebase --onto $(cat .git/new-root) rewrite-start main'" }
+      ],
+      "commands": ["git log --oneline", "sh -c 'git log --oneline | wc -l'", "ls"],
+      "expect": "Three commits — the synthetic root plus the two that came after the cut-off — and every file still present.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "3",
+          "label": "history is truncated to three commits",
+          "hint": "git rebase --onto <new-root> <cut-off> main" },
+        { "cmd": "git ls-files", "contains": ["legacy.py", "app.py", "dosing.py"],
+          "label": "…while every file survived" }
+      ]
+    },
+    {
+      "title": "Prove the tree is byte-for-byte unchanged",
+      "why": "The whole promise of a truncation is that the code is identical and only the history is shorter. Diff against the backup branch: an empty result is the proof.",
+      "commands": ["git diff --stat pre-truncate-backup main", "sh -c 'git diff --name-only pre-truncate-backup main | wc -l'", "sh -c 'test \"$(git rev-parse main^{tree})\" = \"$(git rev-parse pre-truncate-backup^{tree})\" && echo identical trees'"],
+      "verify": [
+        { "cmd": "git diff --name-only pre-truncate-backup main", "empty": true,
+          "label": "the working tree is identical to before the truncation" }
+      ]
+    },
+    {
+      "title": "See exactly what you lost",
+      "why": "Blame on a legacy line now points at the synthetic root, and `log -S` cannot find when the churn arrived. This is the cost, and it is worth seeing before you make it permanent.",
+      "commands": ["sh -c 'git blame -L 1,2 legacy.py'", "sh -c 'git log --oneline -- legacy.py | wc -l'", "sh -c 'cd ../full-history-archive.git && git log --oneline main -- legacy.py | wc -l'", "sh -c 'git log --oneline -S \"churn 3\"'"],
+      "expect": "One commit for legacy.py locally against thirteen in the archive, and the pickaxe now blames the synthetic root for lines written years ago.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline -- legacy.py | wc -l'", "equals": "1",
+          "label": "the legacy file's history collapsed to the synthetic root" },
+        { "cmd": "sh -c 'git log --oneline main -- legacy.py | wc -l'", "cwd": "full-history-archive.git",
+          "equals": "13",
+          "label": "…while the archive still has all thirteen commits, which is why you made one" }
+      ]
+    },
+    {
+      "title": "Drop the old objects and record what happened",
+      "why": "Until the backup branch and reflog are gone, nothing has actually shrunk. Delete them, gc, and commit a note explaining where the real history lives — otherwise the next person assumes the project started last Tuesday.",
+      "actions": [
+        { "run": "git branch -D pre-truncate-backup" },
+        { "run": "git tag -d rewrite-start" },
+        { "run": "git reflog expire --expire=now --all" },
+        { "run": "git gc --prune=now --quiet" },
+        { "write": { "path": "HISTORY.md", "content": "# History\n\nCommits before the root of this repository were truncated during an import\ncleanup. The full pre-truncation history is archived as a mirror clone and\nis available on request — blame and bisect before the root must be run there.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the history truncation\"" }
+      ],
+      "commands": ["git count-objects -vH", "git log --oneline", "cat HISTORY.md"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "HISTORY.md",
+          "label": "the truncation is documented for future readers",
+          "hint": "a repository whose history starts abruptly needs a note saying why" },
+        { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "4",
+          "label": "the final history is four commits" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "4",
+      "label": "history was truncated to the part that matters",
+      "hint": "commit-tree a new root, then rebase --onto it" },
+    { "cmd": "git ls-files", "contains": ["legacy.py", "app.py", "dosing.py"],
+      "label": "every file survived the truncation" },
+    { "cmd": "sh -c 'git log --oneline main | wc -l'", "cwd": "full-history-archive.git", "equals": "16",
+      "label": "the full history is preserved in an archive clone",
+      "hint": "git clone --mirror before truncating" },
+    { "cmd": "git ls-files", "contains": "HISTORY.md",
+      "label": "the repository explains where its earlier history went" },
+    { "cmd": "git fsck --full", "empty": true, "label": "the truncated repository is healthy" }
+  ],
+  "pitfalls": [
+    "Truncation is irreversible once you gc. Take a `--mirror` clone first and keep it somewhere durable, not on the same disk.",
+    "Every sha changes, so every clone must be recreated. Coordinate it like a migration, not like a commit.",
+    "`git blame` on old lines will point at the synthetic root forever. If your team relies on blame for archaeology, the churn is probably worth keeping.",
+    "A shallow clone (`--depth`) gives you a small clone without rewriting anything, and can be deepened later. Try that before truncating for real.",
+    "Repository size usually comes from large blobs, not from commit count. Measure with `git count-objects -vH` before assuming truncation will help."
+  ],
+  "cheatsheet": [
+    ["git clone --mirror <path>", "archive everything before you truncate"],
+    ["git commit-tree <tree> -m \"...\"", "a parentless root commit"],
+    ["git rebase --onto <new-root> <cut-off> <branch>", "replay the modern history onto it"],
+    ["git diff --name-only <backup> <branch>", "prove the tree is unchanged"],
+    ["git rev-list --max-parents=0 HEAD", "confirm the new root"],
+    ["git reflog expire --expire=now --all && git gc --prune=now", "make it permanent"],
+    ["git clone --depth N", "the reversible alternative"]
+  ]
+}
