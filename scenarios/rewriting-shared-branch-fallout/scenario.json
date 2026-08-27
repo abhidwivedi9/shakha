@@ -1,0 +1,130 @@
+{
+  "id": "rewriting-shared-branch-fallout",
+  "title": "Someone rebased the branch you were working on",
+  "category": "rewriting",
+  "level": "expert",
+  "order": 3,
+  "duration_min": 16,
+  "summary": "A colleague force-pushed a rebased branch. Your next pull produces a monstrous merge with duplicated commits. Recognise what happened, and recover cleanly with rebase --onto.",
+  "concepts": ["rewritten upstream", "duplicated commits after pull", "rebase --onto", "reflog for the old base", "pull.rebase and --fork-point"],
+  "mental_model": "After a force-push, your local branch and the remote share no recent history — the same changes exist under different shas. Merging glues both copies together; the fix is to replay only your own commits onto the new upstream.",
+  "danger": "Pulling normally after someone rebases will happily create a merge containing every commit twice. It looks like it worked, and the duplication is discovered days later in review.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/api" },
+    { "write": { "path": "api.py", "content": "def get():\n    return {}\n" } },
+    { "commit": { "message": "Add GET endpoint" } },
+    { "write": { "path": "api.py", "content": "def get():\n    return {}\n\n\ndef post(body):\n    return body\n" } },
+    { "commit": { "message": "Add POST endpoint" } },
+    { "run": "git push -q -u origin feature/api" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "run": "git switch -q -c feature/api origin/feature/api" },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "api.py", "content": "def get():\n    return {}\n\n\ndef post(body):\n    return body\n\n\ndef delete(id):\n    return id\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Add DELETE endpoint" } },
+    { "write": { "path": "README.md", "content": "# API\n" } },
+    { "commit": { "message": "Document the API" } },
+    { "run": "git rebase -q --exec \"git commit --amend --no-edit --date=now\" origin/main", "env": { "GIT_EDITOR": "true" } },
+    { "run": "git push -q --force origin feature/api" }
+  ],
+  "steps": [
+    {
+      "title": "The colleague's view: something is wrong",
+      "why": "Run this in the teammate clone. They have one local commit on top of what they fetched — but the branch on the server has been rebuilt, so their base commit no longer exists upstream.",
+      "cwd": "teammate",
+      "commands": ["git fetch origin", "git status -sb", "git log --oneline --graph --all --decorate"],
+      "expect": "Diverged: commits on both sides, with the same subjects appearing twice.",
+      "verify": [
+        { "cmd": "git status", "cwd": "teammate", "contains": "have diverged",
+          "label": "the branch has diverged from its upstream" }
+      ]
+    },
+    {
+      "title": "Recognise a rewrite rather than a normal divergence",
+      "why": "The tell is duplicate subjects with different shas. `git log --left-right` shows both sides carrying 'Add GET endpoint' — that cannot happen from ordinary parallel work.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline --left-right --graph HEAD...origin/feature/api", "git log --format='%h %s' HEAD -4", "git log --format='%h %s' origin/feature/api -4"],
+      "expect": "The same subjects on both sides with different shas — the signature of a force-push."
+    },
+    {
+      "title": "See what the naive fix produces",
+      "why": "Merging joins the two histories, so every rewritten commit appears twice in the log. The code may even be correct, but the history is now permanently confusing.",
+      "cwd": "teammate",
+      "commands": ["git merge origin/feature/api", "git log --oneline --graph -8", "sh -c 'git log --format=%s | sort | uniq -d'"],
+      "expect": "Duplicate subjects listed by uniq -d — proof of the double history."
+    },
+    {
+      "title": "Undo that merge",
+      "why": "`reset --hard ORIG_HEAD` puts the branch back to before the merge. Recognising the problem early is worth far more than any amount of cleverness afterwards.",
+      "cwd": "teammate",
+      "commands": ["git reset --hard ORIG_HEAD", "git log --oneline -3", "sh -c 'git log --format=%s | sort | uniq -d'"],
+      "expect": "Back to one copy of each commit.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%s | sort | uniq -d | wc -l'", "cwd": "teammate",
+          "equals": "0", "label": "the duplicating merge was undone" }
+      ]
+    },
+    {
+      "title": "Identify exactly which commits are yours",
+      "why": "Everything the colleague has that the old upstream did not: one commit. `origin/feature/api@{1}` in the reflog is where their remote-tracking ref pointed before the force-push — the old base.",
+      "cwd": "teammate",
+      "commands": ["git reflog origin/feature/api", "git log --oneline origin/feature/api@{1}..HEAD"],
+      "expect": "One commit — the DELETE endpoint.",
+      "verify": [
+        { "cmd": "git log --oneline origin/feature/api@{1}..HEAD", "cwd": "teammate", "lines": 1,
+          "label": "the reflog identifies the pre-rewrite base and your own commit" }
+      ]
+    },
+    {
+      "title": "Replay just that commit onto the new upstream",
+      "why": "`--onto` with the old base as the upstream argument moves only your work. The duplicated commits are simply not in the range, so the result is one clean history with one copy of everything.",
+      "cwd": "teammate",
+      "commands": ["git rebase --onto origin/feature/api origin/feature/api@{1} feature/api", "git log --oneline --graph -5", "cat api.py", "sh -c 'git log --format=%s | sort | uniq -d'"],
+      "expect": "Your commit on top of the rewritten branch, and no duplicates at all.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%s | sort | uniq -d | wc -l'", "cwd": "teammate",
+          "equals": "0", "label": "no duplicated commits remain" },
+        { "cmd": "git log --oneline origin/feature/api..HEAD", "cwd": "teammate", "lines": 1,
+          "label": "exactly one commit sits on top of the rewritten upstream",
+          "hint": "git rebase --onto origin/feature/api origin/feature/api@{1} feature/api" }
+      ]
+    },
+    {
+      "title": "Publish and confirm the branch is sane",
+      "why": "The push is a fast-forward now, because your branch contains the rewritten upstream. Everyone ends up with one history and one copy of each change.",
+      "cwd": "teammate",
+      "commands": ["git push origin feature/api", "git log --oneline --graph --all --decorate -6", "cat api.py"],
+      "verify": [
+        { "cmd": "git log --oneline feature/api", "cwd": "origin", "lines": 5,
+          "label": "the server has a single clean history" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git log --format=%s | sort | uniq -d | wc -l'", "cwd": "teammate", "equals": "0",
+      "label": "the colleague's branch has no duplicated commits",
+      "hint": "rebase --onto the new upstream from the old base, do not merge" },
+    { "cmd": "git log --oneline feature/api", "cwd": "origin", "lines": 5,
+      "label": "the server ended up with one clean history — five commits, no duplicates" },
+    { "cmd": "git show feature/api:api.py", "cwd": "origin", "contains": ["def get", "def post", "def delete"],
+      "label": "every endpoint survived the recovery" },
+    { "cmd": "git status -sb", "cwd": "teammate", "not_contains": ["ahead", "behind"],
+      "label": "the colleague's branch is back in sync with the server" }
+  ],
+  "pitfalls": [
+    "Duplicate subjects with different shas is the signature of a force-push. Check for it before pulling — `git log --format=%s | sort | uniq -d` takes a second.",
+    "`origin/<branch>@{1}` is the reflog of the remote-tracking ref, which survives a force-push and is the cheapest way to find the old base.",
+    "`git pull --rebase --fork-point` can work this out automatically in simple cases, but `--onto` with an explicit base is predictable and always correct.",
+    "The real prevention is social: never rebase a branch other people are working on without telling them first."
+  ],
+  "cheatsheet": [
+    ["git status -sb", "spot a diverged branch immediately"],
+    ["git log --format=%s | sort | uniq -d", "detect duplicated commits"],
+    ["git reflog <remote>/<branch>", "where the remote ref pointed before the force-push"],
+    ["git rebase --onto <new-upstream> <old-base> <branch>", "replay only your commits"],
+    ["git reset --hard ORIG_HEAD", "undo a merge you should not have made"],
+    ["git pull --rebase --fork-point", "sometimes works this out for you"]
+  ]
+}

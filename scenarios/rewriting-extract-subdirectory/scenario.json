@@ -1,0 +1,148 @@
+{
+  "id": "rewriting-extract-subdirectory",
+  "title": "Split one directory out into its own repository, with its history",
+  "category": "rewriting",
+  "level": "expert",
+  "order": 4,
+  "duration_min": 16,
+  "summary": "A library inside a monorepo needs to become a standalone repository. Extract it so its commits come along — not a single 'initial commit' that throws twenty months of context away.",
+  "concepts": ["subdirectory-filter", "history extraction", "git filter-repo", "paths rewritten to the root", "removing the directory afterwards"],
+  "mental_model": "Extraction rewrites every commit to contain only the paths you keep, with the subdirectory becoming the new root. Commits that touched nothing else are dropped, so the result is a history of that library alone.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app/main.py", "content": "print('app v1')\n" } },
+    { "write": { "path": "libs/sensors/reader.py", "content": "def read_ph():\n    return 8.1\n" } },
+    { "commit": { "message": "Initial monorepo layout" } },
+    { "write": { "path": "libs/sensors/reader.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n" } },
+    { "commit": { "message": "sensors: add temperature reading" } },
+    { "write": { "path": "app/main.py", "content": "print('app v2')\n" } },
+    { "commit": { "message": "app: bump version" } },
+    { "write": { "path": "libs/sensors/reader.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n\n\ndef read_salinity():\n    return 1.025\n" } },
+    { "write": { "path": "libs/sensors/README.md", "content": "# Sensors library\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"sensors: add salinity and docs\"" },
+    { "write": { "path": "app/main.py", "content": "print('app v3')\n" } },
+    { "commit": { "message": "app: another change" } }
+  ],
+  "steps": [
+    {
+      "title": "See the history you want to keep",
+      "why": "Five commits, three of which touch the sensors library. A naive copy-paste into a new repository would lose all three, along with every explanation of why the code looks the way it does.",
+      "commands": ["git log --oneline", "git log --oneline -- libs/sensors", "ls libs/sensors"],
+      "verify": [
+        { "cmd": "git log --oneline -- libs/sensors", "lines": 3,
+          "label": "three commits touch the library" }
+      ]
+    },
+    {
+      "title": "Clone the repository before rewriting anything",
+      "why": "Extraction is destructive to the clone it runs in. Working on a throwaway copy means the monorepo is never at risk, which is the standard discipline for any history rewrite.",
+      "commands": ["sh -c 'git clone -q \"$(pwd)\" ../sensors-extract'", "sh -c 'cd ../sensors-extract && git log --oneline'"],
+      "expect": "A full copy, with all five commits.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "sensors-extract", "lines": 5,
+          "label": "the working copy for the rewrite is ready" }
+      ]
+    },
+    {
+      "title": "Rewrite it down to the subdirectory",
+      "why": "`--subdirectory-filter` keeps only commits touching that path and rewrites each tree so the subdirectory becomes the root. Commits that touched nothing inside it disappear entirely.",
+      "actions": [
+        { "cwd": "sensors-extract", "run": "git filter-branch --force --prune-empty --subdirectory-filter libs/sensors -- --all",
+          "env": { "FILTER_BRANCH_SQUELCH_WARNING": "1" } }
+      ],
+      "cwd": "sensors-extract",
+      "commands": ["git log --oneline", "ls", "git show --stat HEAD"],
+      "expect": "Three commits, and reader.py at the repository root rather than under libs/sensors.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "sensors-extract", "lines": 3,
+          "label": "only the library's commits survived",
+          "hint": "git filter-branch --prune-empty --subdirectory-filter libs/sensors" },
+        { "cmd": "ls", "cwd": "sensors-extract", "contains": "reader.py",
+          "label": "the subdirectory became the root" },
+        { "cmd": "ls", "cwd": "sensors-extract", "not_contains": "app",
+          "label": "nothing from the rest of the monorepo came along" }
+      ]
+    },
+    {
+      "title": "Verify the history is genuinely useful",
+      "why": "Each commit still explains one change to the library, and `git log -p` reads as a coherent story. That is the whole reason to extract rather than copy.",
+      "cwd": "sensors-extract",
+      "commands": ["git log --oneline --stat", "git show HEAD~2:reader.py", "git log -p -1 -- reader.py"],
+      "expect": "The original messages and diffs, now scoped to this library alone."
+    },
+    {
+      "title": "Clean up the rewrite's leftovers",
+      "why": "Same as any filter-branch: delete `refs/original`, expire the reflog, and gc. Until you do, the extracted repository still contains every object from the monorepo.",
+      "cwd": "sensors-extract",
+      "commands": ["git count-objects -vH", "sh -c 'git for-each-ref --format=\"%(refname)\" refs/original | xargs -n 1 git update-ref -d'", "git reflog expire --expire=now --all", "git gc --prune=now --quiet", "git count-objects -vH", "sh -c 'git rev-list --objects --all | grep main.py | wc -l'"],
+      "expect": "0 — no trace of the app directory's blobs.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --objects --all | grep main.py | wc -l'", "cwd": "sensors-extract",
+          "equals": "0", "label": "the monorepo's other files are gone from the object database",
+          "hint": "delete refs/original, expire reflogs, then gc --prune=now" }
+      ]
+    },
+    {
+      "title": "Point it at its own home",
+      "why": "The extracted repository still has the monorepo as origin, which is a trap waiting to happen. Repoint it before anyone pushes.",
+      "actions": [
+        { "run": "git init --bare -q -b main ../sensors.git" },
+        { "cwd": "sensors-extract", "run": "git remote remove origin" },
+        { "cwd": "sensors-extract", "run": "sh -c 'git remote add origin ../sensors.git'" },
+        { "cwd": "sensors-extract", "run": "git push -q -u origin main" }
+      ],
+      "cwd": "sensors-extract",
+      "commands": ["git remote -v", "git log --oneline", "git status -sb"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "sensors.git", "lines": 3,
+          "label": "the standalone repository is published with its history" }
+      ]
+    },
+    {
+      "title": "Remove the directory from the monorepo",
+      "why": "Extraction copies; it does not move. The monorepo still has the library, so delete it there and add a pointer explaining where it went — otherwise the two diverge silently.",
+      "actions": [
+        { "run": "git rm -r -q libs/sensors" },
+        { "write": { "path": "libs/README.md", "content": "# Libraries\n\n`sensors` was extracted to its own repository, with history, in this commit.\nInstall it as a dependency instead of editing it here.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Extract the sensors library into its own repository\"" }
+      ],
+      "commands": ["ls libs", "git log --oneline", "git ls-files"],
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": "libs/sensors/reader.py",
+          "label": "the monorepo no longer tracks the extracted library" },
+        { "cmd": "git ls-files", "contains": "libs/README.md",
+          "label": "…and explains where it went" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "sensors.git", "lines": 3,
+      "label": "the library became a standalone repository with its real history",
+      "hint": "clone, filter-branch --subdirectory-filter, then push to a new remote" },
+    { "cmd": "git show main:reader.py", "cwd": "sensors.git", "contains": ["read_ph", "read_salinity"],
+      "label": "all of its code came across" },
+    { "cmd": "sh -c 'git rev-list --objects --all | grep main.py | wc -l'", "cwd": "sensors-extract",
+      "equals": "0", "label": "none of the monorepo's other content came with it" },
+    { "cmd": "git ls-files", "not_contains": "libs/sensors/reader.py",
+      "label": "the monorepo stopped tracking the extracted directory" },
+    { "cmd": "git log --oneline", "lines": 6,
+      "label": "the monorepo recorded the extraction as a normal commit" }
+  ],
+  "pitfalls": [
+    "`git filter-repo --path libs/sensors --path-rename libs/sensors/:` is the modern equivalent and is far faster on a large repository. filter-branch is used here only because it ships with git.",
+    "Extraction copies history — the monorepo keeps its copy until you delete the directory there too. Two live copies is the worst outcome.",
+    "Without `--prune-empty`, every commit that never touched the subdirectory survives as an empty commit, and the extracted history is unreadable.",
+    "Tags and other branches need `-- --all` to be rewritten as well; without it you extract only the current branch.",
+    "Always run the rewrite in a throwaway clone. There is no undo once you have deleted refs/original and gc'd."
+  ],
+  "cheatsheet": [
+    ["git log --oneline -- <dir>", "the history you are about to extract"],
+    ["git filter-branch --prune-empty --subdirectory-filter <dir> -- --all", "extract it"],
+    ["git filter-repo --path <dir> --path-rename <dir>/:", "the modern, faster equivalent"],
+    ["git for-each-ref refs/original", "the backup refs to delete afterwards"],
+    ["git remote remove origin && git remote add origin <new>", "repoint the extracted repo"],
+    ["git rm -r <dir>", "remove it from the monorepo so the two cannot diverge"]
+  ]
+}

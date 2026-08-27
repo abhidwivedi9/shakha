@@ -1,0 +1,131 @@
+{
+  "id": "rewriting-fix-author-identity",
+  "title": "Forty commits authored by 'root@localhost'",
+  "category": "rewriting",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "You worked on a fresh machine with no git identity configured. Fix the author on the commits that need it — with rebase for a few, with an env-filter for many — and set things up so it cannot happen again.",
+  "concepts": ["author vs committer", "rebase --exec", "filter-branch --env-filter", "mailmap as the no-rewrite option", "commit identity is immutable"],
+  "mental_model": "Author and committer are baked into the commit object, so changing either means new commits and new shas. When a rewrite is too disruptive, `.mailmap` fixes the *display* without touching history at all.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git config user.name \"root\"" },
+    { "run": "git config user.email \"root@localhost\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add dosing\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git commit -q -a -m \"Calibrate dosing\"" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add alerts\"" },
+    { "run": "git config user.name \"Learner\"" },
+    { "run": "git config user.email \"learner@shakha.local\"" }
+  ],
+  "steps": [
+    {
+      "title": "See the damage",
+      "why": "Three commits authored by root@localhost. Contribution graphs, blame, `shortlog` and any code-ownership tooling all read that field, so it matters beyond tidiness.",
+      "commands": ["git log --format='%h %an <%ae> | committer %cn <%ce> | %s'"],
+      "expect": "Three commits with the wrong identity, one correct.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%ae | grep -c root@localhost'", "equals": "3",
+          "label": "three commits carry the wrong author" }
+      ]
+    },
+    {
+      "title": "The no-rewrite option: mailmap",
+      "why": "`.mailmap` maps identities at display time. Every git command that shows an author honours it, and no sha changes. If the commits are already pushed, try this before reaching for a rewrite.",
+      "actions": [
+        { "write": { "path": ".mailmap", "content": "Learner <learner@shakha.local> root <root@localhost>\n" } },
+        { "run": "git add .mailmap" },
+        { "run": "git commit -q -m \"Map the root identity to a real one\"" }
+      ],
+      "commands": ["git log --format='%h %aN <%aE> | %s'", "git shortlog -sne HEAD"],
+      "expect": "%aN and %aE — the mailmapped forms — now show the correct identity.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%aE | grep root@localhost | wc -l'", "equals": "0",
+          "label": "mailmap fixes the displayed identity with no rewrite",
+          "hint": "write .mailmap mapping the canonical name to the bad email" }
+      ]
+    },
+    {
+      "title": "…but the raw commits are unchanged",
+      "why": "`%ae` is the raw field, `%aE` the mailmapped one. Tools that read the object directly — some forges included — still see root@localhost. If that matters, you need a rewrite.",
+      "commands": ["git log --format='%h raw=%ae mapped=%aE'", "git cat-file -p HEAD~1"],
+      "expect": "The commit object still says root@localhost."
+    },
+    {
+      "title": "Rewrite the author on every matching commit",
+      "why": "`--env-filter` runs per commit and can set the author and committer environment variables. Conditioning on the old email means only the affected commits change identity — though every commit after them still gets a new sha.",
+      "actions": [
+        { "run": "git filter-branch --force --env-filter 'if [ \"$GIT_AUTHOR_EMAIL\" = \"root@localhost\" ]; then export GIT_AUTHOR_NAME=\"Learner\"; export GIT_AUTHOR_EMAIL=\"learner@shakha.local\"; fi; if [ \"$GIT_COMMITTER_EMAIL\" = \"root@localhost\" ]; then export GIT_COMMITTER_NAME=\"Learner\"; export GIT_COMMITTER_EMAIL=\"learner@shakha.local\"; fi' -- --branches",
+          "env": { "FILTER_BRANCH_SQUELCH_WARNING": "1" } }
+      ],
+      "commands": ["git log --format='%h %an <%ae> | %s'", "git cat-file -p HEAD~1"],
+      "expect": "Every commit now authored correctly, in the object itself.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%ae | grep root@localhost | wc -l'", "equals": "0",
+          "label": "the raw author field is fixed in every commit",
+          "hint": "git filter-branch --env-filter, conditioned on the old email" }
+      ]
+    },
+    {
+      "title": "Clean up the backup refs",
+      "why": "Same as any filter-branch: the originals live under `refs/original` until you delete them. Until then `git log --all` still shows the old identities.",
+      "commands": ["sh -c 'git for-each-ref --format=\"%(refname)\" refs/original | xargs -n 1 git update-ref -d'", "git reflog expire --expire=now --all", "git gc --prune=now --quiet", "sh -c 'git log --all --format=%ae | grep -c root@localhost || true'"],
+      "verify": [
+        { "cmd": "sh -c 'git log --all --format=%ae | grep root@localhost | wc -l'", "equals": "0",
+          "label": "no reference to the old identity remains anywhere" }
+      ]
+    },
+    {
+      "title": "The lighter tool for a handful of commits",
+      "why": "For three or four commits, `rebase --exec` with `--reset-author` avoids filter-branch entirely. It rewrites the same shas but is far easier to reason about and to abort.",
+      "commands": ["git log --format='%h %an %s' -4", "git rebase --exec 'git commit --amend --no-edit --reset-author' --root --quiet", "git log --format='%h %an <%ae> | %s'"],
+      "expect": "Same result, achieved with a command you already understand.",
+      "verify": [
+        { "cmd": "sh -c 'git log --format=%ae | grep -c learner@shakha.local'", "equals": "5",
+          "label": "every commit now carries the correct identity" }
+      ]
+    },
+    {
+      "title": "Prevent the next occurrence",
+      "why": "`user.useConfigOnly true` makes git refuse to commit until an identity is configured, instead of inventing one from the hostname. Two config lines, and this whole scenario stops happening.",
+      "commands": ["git config --global user.useConfigOnly true", "git config --global --get user.useConfigOnly", "git log --format='%h %an %s'"],
+      "verify": [
+        { "cmd": "git config --global --get user.useConfigOnly", "equals": "true",
+          "label": "git will now refuse to guess an identity",
+          "hint": "git config --global user.useConfigOnly true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git log --all --format=%ae | grep root@localhost | wc -l'", "equals": "0",
+      "label": "no commit anywhere is authored by root@localhost",
+      "hint": "filter-branch --env-filter, then delete refs/original and gc" },
+    { "cmd": "git ls-files", "contains": ".mailmap",
+      "label": "the mailmap is committed as the display-level safety net" },
+    { "cmd": "sh -c 'git log --format=%ae | grep -c learner@shakha.local'", "equals": "5",
+      "label": "every commit carries the correct author" },
+    { "cmd": "git config --global --get user.useConfigOnly", "equals": "true",
+      "label": "git is configured to refuse a guessed identity in future" }
+  ],
+  "pitfalls": [
+    "If the commits are pushed and shared, prefer `.mailmap`. A rewrite forces everyone to re-clone over a cosmetic field.",
+    "`--reset-author` also resets the author DATE to now. Use the env-filter approach when the original timestamps matter.",
+    "Author and committer are different fields. A rebase changes the committer and preserves the author — which is correct, and often surprises people reading `git log --format=%cn`.",
+    "`git config --global user.useConfigOnly true` is the real fix. Without it, git happily invents an identity from your username and hostname."
+  ],
+  "cheatsheet": [
+    ["git log --format='%an <%ae> | %cn <%ce>'", "raw author and committer"],
+    ["git log --format='%aN <%aE>'", "the mailmapped forms"],
+    [".mailmap", "fix the display with no rewrite"],
+    ["git filter-branch --env-filter '...'", "rewrite identity in the objects"],
+    ["git rebase --exec 'git commit --amend --no-edit --reset-author' --root", "the lighter option for a few commits"],
+    ["git config --global user.useConfigOnly true", "refuse to guess an identity"]
+  ]
+}

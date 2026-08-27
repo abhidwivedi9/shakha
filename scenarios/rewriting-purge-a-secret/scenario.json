@@ -1,0 +1,131 @@
+{
+  "id": "rewriting-purge-a-secret",
+  "title": "A password is in history. Remove it from every commit.",
+  "category": "rewriting",
+  "level": "expert",
+  "order": 1,
+  "duration_min": 18,
+  "summary": "Deleting the file does nothing — the blob stays in every commit that had it. Rewrite the whole history to purge it, then face the part people skip: the credential is already compromised.",
+  "concepts": ["filter-branch --index-filter", "git filter-repo", "rewriting every commit", "new shas", "rotating the secret"],
+  "mental_model": "Removing a file from history means rebuilding every commit that ever contained it. Every sha downstream changes, so this is not a fix you apply quietly — it is a coordinated event for everyone with a clone.",
+  "danger": "A pushed secret is compromised the moment it is pushed. Rewriting history hides it from future readers; it does not un-leak it. Rotate the credential first, always.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "config/secrets.env", "content": "DB_PASSWORD=hunter2-production\nSTRIPE_KEY=sk_live_51H8xample\n" } },
+    { "write": { "path": "config/app.env", "content": "LOG_LEVEL=info\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add environment configuration\"" },
+    { "write": { "path": "db.py", "content": "import os\n\nDSN = os.environ['DB_DSN']\n" } },
+    { "commit": { "message": "Add database module" } },
+    { "write": { "path": "app.py", "content": "print('reef controller v2')\n" } },
+    { "commit": { "message": "Bump version" } },
+    { "delete": "config/secrets.env" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Remove secrets file (too late)\"" }
+  ],
+  "steps": [
+    {
+      "title": "Confirm the secret is still readable",
+      "why": "The file is not in the working tree and not in HEAD. It is still in three commits, and anyone with a clone can read it with a single command.",
+      "commands": ["ls config", "git log --oneline", "sh -c 'git log --all --oneline -- config/secrets.env'", "git show HEAD~2:config/secrets.env"],
+      "expect": "The password, printed straight out of history.",
+      "verify": [
+        { "cmd": "git show HEAD~2:config/secrets.env", "contains": "hunter2-production",
+          "label": "the secret is still in history" }
+      ]
+    },
+    {
+      "title": "Rotate the credential first",
+      "why": "This is the step people skip. Anyone who cloned, any CI cache, any forge's dangling-commit view still has it. Rewriting history is cleanup; rotation is the actual fix. Record it so the history rewrite is not mistaken for a remediation.",
+      "actions": [
+        { "write": { "path": "SECURITY-INCIDENT.md", "content": "# Incident: credentials committed to git\n\n- DB_PASSWORD and STRIPE_KEY were committed in config/secrets.env.\n- Both rotated before the history rewrite.\n- History rewritten afterwards to remove the file from all commits.\n- Everyone with a clone must re-clone; old clones still contain the old blob.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the credential rotation\"" }
+      ],
+      "commands": ["cat SECURITY-INCIDENT.md", "git log --oneline"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "SECURITY-INCIDENT.md",
+          "label": "the rotation is documented" }
+      ]
+    },
+    {
+      "title": "Find every commit that carries the file",
+      "why": "Know the blast radius before rewriting. Every one of these commits will get a new sha, and so will everything after them.",
+      "commands": ["sh -c 'git log --all --oneline -- config/secrets.env'", "sh -c 'git rev-list --objects --all | grep secrets.env'"],
+      "expect": "Several commits, and the blob still reachable."
+    },
+    {
+      "title": "Rewrite every commit to drop the file",
+      "why": "`--index-filter` runs against the index rather than a checkout, which makes it dramatically faster than `--tree-filter`. `--ignore-unmatch` stops it failing on commits that never had the file.",
+      "actions": [
+        { "run": "git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch config/secrets.env\" --prune-empty -- --all",
+          "env": { "FILTER_BRANCH_SQUELCH_WARNING": "1" } }
+      ],
+      "commands": ["git log --oneline", "sh -c 'git log --all --oneline -- config/secrets.env'"],
+      "expect": "Every commit rewritten, and no commit touching the secrets file any more.",
+      "verify": [
+        { "cmd": "sh -c 'git log --branches --oneline -- config/secrets.env | wc -l'", "equals": "0",
+          "label": "no commit on any branch contains the file (refs/original still does, for now)",
+          "hint": "git filter-branch --index-filter \"git rm --cached --ignore-unmatch <path>\" -- --all" }
+      ]
+    },
+    {
+      "title": "Confirm the other config survived",
+      "why": "A rewrite that also removed app.env would be a disaster of a different kind. Always verify the tree is otherwise identical — this is why you check, rather than trusting the command.",
+      "commands": ["git show HEAD~3 --stat", "sh -c 'git show HEAD~3:config/app.env'", "git ls-files"],
+      "verify": [
+        { "cmd": "sh -c 'git show HEAD~3:config/app.env'", "contains": "LOG_LEVEL",
+          "label": "the neighbouring config file is untouched" }
+      ]
+    },
+    {
+      "title": "Expire the backup refs filter-branch left you",
+      "why": "filter-branch keeps the original commits under `refs/original/`, so the blob is still reachable and `git log --all` can still find it. Expiring those refs and the reflog, then pruning, is what actually removes the object.",
+      "commands": ["sh -c 'git for-each-ref refs/original'", "sh -c 'git for-each-ref --format=\"%(refname)\" refs/original | xargs -n 1 git update-ref -d'", "git reflog expire --expire=now --all", "git gc --prune=now --quiet", "sh -c 'git rev-list --objects --all | grep secrets.env | wc -l'"],
+      "expect": "0 — the blob is no longer reachable from anything.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --objects --all | grep secrets.env | wc -l'", "equals": "0",
+          "label": "the blob is gone from the object database",
+          "hint": "delete refs/original, expire the reflog, then gc --prune=now" }
+      ]
+    },
+    {
+      "title": "Understand what everyone else must now do",
+      "why": "Every sha changed, so every clone is incompatible. Colleagues must re-clone — a `git pull` would merge the old history straight back in, secret included, which is the most common way this cleanup fails.",
+      "commands": ["git log --oneline", "git count-objects -vH", "cat SECURITY-INCIDENT.md"],
+      "expect": "A clean history — and a document explaining why everyone needs a fresh clone."
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git log --all --oneline -- config/secrets.env | wc -l'", "equals": "0",
+      "label": "no commit anywhere references the secrets file",
+      "hint": "filter-branch with --index-filter over --all" },
+    { "cmd": "sh -c 'git rev-list --objects --all | grep secrets.env | wc -l'", "equals": "0",
+      "label": "the blob itself is unreachable and pruned",
+      "hint": "delete refs/original, expire reflogs, gc --prune=now" },
+    { "cmd": "sh -c 'git show HEAD~3:config/app.env'", "contains": "LOG_LEVEL",
+      "label": "the rewrite removed only the intended file" },
+    { "cmd": "git ls-files", "contains": "SECURITY-INCIDENT.md",
+      "label": "the rotation was documented — the rewrite is not the remediation" },
+    { "cmd": "git log --oneline", "lines": 5,
+      "label": "history is intact apart from the purge" }
+  ],
+  "pitfalls": [
+    "Rotate the credential FIRST. History rewriting is housekeeping; anyone who cloned still has the secret, and so may the forge.",
+    "`git filter-repo` is the modern, faster and much safer tool. It is a separate install; filter-branch is used here only because it ships with git.",
+    "filter-branch keeps originals in `refs/original/`. Until you delete those and gc, nothing has actually been removed.",
+    "After the rewrite, colleagues must re-clone. If anyone merges an old clone back in, the secret returns and so does the whole old history.",
+    "On a hosted forge, the old commits may remain accessible by sha until support garbage-collects them. Ask them; do not assume."
+  ],
+  "cheatsheet": [
+    ["git log --all -- <path>", "which commits contain a file"],
+    ["git filter-branch --index-filter 'git rm --cached --ignore-unmatch <path>' -- --all", "purge it from every commit"],
+    ["git filter-repo --path <path> --invert-paths", "the modern equivalent, far faster"],
+    ["git for-each-ref refs/original", "the backup refs left behind"],
+    ["git reflog expire --expire=now --all", "drop reflog references"],
+    ["git gc --prune=now", "actually delete the unreachable objects"],
+    ["git rev-list --objects --all | grep <name>", "verify it is really gone"]
+  ]
+}
