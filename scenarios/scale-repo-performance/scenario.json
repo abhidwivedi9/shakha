@@ -1,0 +1,119 @@
+{
+  "id": "scale-repo-performance",
+  "title": "git status takes eight seconds. Fix it.",
+  "category": "scale",
+  "level": "advanced",
+  "order": 7,
+  "duration_min": 14,
+  "summary": "On a repository with tens of thousands of files, everyday commands crawl. Measure where the time goes, then turn on the four settings that fix it — none of which change a single commit.",
+  "concepts": ["core.untrackedCache", "core.fsmonitor", "commit-graph", "feature.manyFiles", "git maintenance", "GIT_TRACE timing"],
+  "mental_model": "`git status` stats every file; history commands walk every commit. The fixes are caches — of untracked-file scans, of filesystem events, and of the commit graph. They are all local, all safe, and all reversible.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Large repository simulation\n" } },
+    { "run": "sh -c 'for d in $(seq 1 12); do mkdir -p src/module$d; for f in $(seq 1 25); do printf \"VALUE_%d = %d\\n\" $f $f > src/module$d/file$f.py; done; done'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Import the codebase\"" },
+    { "run": "sh -c 'for i in $(seq 1 40); do printf \"# revision %d\\n\" $i >> src/module1/file1.py; git commit -q -a -m \"Change $i\"; done'" }
+  ],
+  "steps": [
+    {
+      "title": "Measure before changing anything",
+      "why": "Three hundred files and forty-one commits is small, but the mechanics are identical at a hundred times the size. Establish the baseline: how many files git stats, and how many commits it walks.",
+      "commands": ["sh -c 'git ls-files | wc -l'", "sh -c 'git rev-list --count HEAD'", "git count-objects -vH", "sh -c 'time git status --short > /dev/null'"],
+      "expect": "File and commit counts, and a timing for status."
+    },
+    {
+      "title": "See where the time actually goes",
+      "why": "`GIT_TRACE_PERFORMANCE=1` prints per-phase timings. On a slow `git status` the dominant line is nearly always the untracked-file scan or the index refresh — knowing which one decides the fix.",
+      "commands": ["sh -c 'GIT_TRACE_PERFORMANCE=1 git status --short 2>&1 | tail -8'"],
+      "expect": "Timed phases, including reading the index and scanning the working tree."
+    },
+    {
+      "title": "Cache the untracked-file scan",
+      "why": "`core.untrackedCache` remembers which directories had untracked files and their mtimes, so status re-scans only directories that actually changed. It is the single biggest win on a large working tree.",
+      "commands": ["git config core.untrackedCache true", "git status --short", "sh -c 'git config --get core.untrackedCache'", "sh -c 'time git status --short > /dev/null'"],
+      "verify": [
+        { "cmd": "git config --get core.untrackedCache", "equals": "true",
+          "label": "the untracked cache is enabled",
+          "hint": "git config core.untrackedCache true" }
+      ]
+    },
+    {
+      "title": "Write a commit-graph",
+      "why": "History traversal walks commit objects one at a time. The commit-graph file stores parents and generation numbers in one place, which makes `log --graph`, `merge-base` and `branch --contains` dramatically faster on deep histories.",
+      "commands": ["git commit-graph write --reachable", "sh -c 'ls .git/objects/info'", "sh -c 'time git log --oneline --graph > /dev/null'", "sh -c 'time git merge-base HEAD HEAD~30 > /dev/null'"],
+      "verify": [
+        { "cmd": "sh -c 'ls .git/objects/info | grep commit-graph | wc -l'", "not_empty": true,
+          "label": "a commit-graph exists",
+          "hint": "git commit-graph write --reachable" }
+      ]
+    },
+    {
+      "title": "Turn on the bundle of large-repo defaults",
+      "why": "`feature.manyFiles` is an umbrella that enables the index version and untracked cache settings suited to big trees. One line instead of remembering four.",
+      "commands": ["git config feature.manyFiles true", "git config --get feature.manyFiles", "git status --short", "sh -c 'git config --list --show-scope | grep -E \"feature|untracked|index\" | cat'"],
+      "verify": [
+        { "cmd": "git config --get feature.manyFiles", "equals": "true",
+          "label": "the many-files feature bundle is on",
+          "hint": "git config feature.manyFiles true" }
+      ]
+    },
+    {
+      "title": "Register background maintenance",
+      "why": "`git maintenance` keeps the commit-graph fresh, repacks incrementally and prefetches — the work that otherwise happens as a surprise ten-second `gc` in the middle of your afternoon.",
+      "commands": ["git maintenance register", "git config --get-regexp maintenance | cat", "git maintenance run --task=commit-graph", "git maintenance run --task=gc --quiet", "git count-objects -vH"],
+      "verify": [
+        { "cmd": "git config --get-regexp maintenance", "not_empty": true,
+          "label": "maintenance is configured for this repository",
+          "hint": "git maintenance register" }
+      ]
+    },
+    {
+      "title": "Know the one that needs a daemon",
+      "why": "`core.fsmonitor true` uses the built-in filesystem monitor so git is told which files changed instead of statting all of them. It is the biggest win of all on a huge tree, and the only one here with a background process attached.",
+      "commands": ["sh -c 'git config core.fsmonitor true && echo \"fsmonitor enabled\"'", "sh -c 'git config --get core.fsmonitor'", "sh -c 'git status --short > /dev/null 2>&1; echo \"status still works\"'", "sh -c 'git config --unset core.fsmonitor && echo \"disabled again for this sandbox\"'"],
+      "expect": "It configures cleanly; on a real large repository this is where the seconds disappear."
+    },
+    {
+      "title": "Confirm nothing about the repository changed",
+      "why": "Every setting above is a cache or a local config. The commits, trees and blobs are identical — which is why these are safe to apply to any repository without asking anyone.",
+      "commands": ["sh -c 'git rev-list --count HEAD'", "sh -c 'git rev-parse HEAD'", "git fsck --full --no-dangling", "sh -c 'time git status --short > /dev/null'"],
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --count HEAD'", "equals": "41",
+          "label": "the history is untouched — these are caches, not rewrites" },
+        { "cmd": "git fsck --full --no-dangling", "empty": true,
+          "label": "the repository is healthy" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get core.untrackedCache", "equals": "true",
+      "label": "the untracked-file scan is cached",
+      "hint": "git config core.untrackedCache true" },
+    { "cmd": "git config --get feature.manyFiles", "equals": "true",
+      "label": "large-repository defaults are enabled" },
+    { "cmd": "sh -c 'ls .git/objects/info | grep commit-graph | wc -l'", "not_empty": true,
+      "label": "a commit-graph speeds up history traversal" },
+    { "cmd": "git config --get-regexp maintenance", "not_empty": true,
+      "label": "background maintenance is registered" },
+    { "cmd": "sh -c 'git rev-list --count HEAD'", "equals": "41",
+      "label": "no commit was changed by any of it" }
+  ],
+  "pitfalls": [
+    "All of these are per-clone config. Document them in your README, because a colleague's slow git is not fixed by your settings.",
+    "`core.fsmonitor true` starts a background daemon. On network filesystems and some container mounts it misbehaves — measure before and after rather than assuming.",
+    "A commit-graph goes stale as you commit. `git maintenance` refreshes it; writing it once and forgetting is a common half-fix.",
+    "If `git status` is slow because of a huge untracked build directory, the real fix is `.gitignore`. Caching a scan you should not be doing is the wrong layer.",
+    "`GIT_TRACE_PERFORMANCE=1` before optimising, and again afterwards. Every recommendation here helps some repositories much more than others."
+  ],
+  "cheatsheet": [
+    ["GIT_TRACE_PERFORMANCE=1 git status", "where the time actually goes"],
+    ["git config core.untrackedCache true", "cache the untracked-file scan"],
+    ["git config core.fsmonitor true", "let the filesystem tell git what changed"],
+    ["git commit-graph write --reachable", "speed up history traversal"],
+    ["git config feature.manyFiles true", "the large-tree defaults bundle"],
+    ["git maintenance register / run", "keep the caches fresh in the background"],
+    ["git count-objects -vH", "size and packing state"]
+  ]
+}

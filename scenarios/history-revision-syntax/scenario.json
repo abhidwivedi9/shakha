@@ -1,0 +1,158 @@
+{
+  "id": "history-revision-syntax",
+  "title": "Name any commit: the revision-specification language",
+  "category": "history",
+  "level": "intermediate",
+  "order": 10,
+  "duration_min": 15,
+  "summary": "HEAD~3, HEAD^2, main@{1}, :/fix, v1.0^{tree}, HEAD^! — every git command takes the same revision language. Learn it once and stop copying shas by hand.",
+  "concepts": ["~ vs ^", "@{n} reflog positions", ":/text search", "^{tree} peeling", "^! and ^@", "rev-parse as the tester"],
+  "mental_model": "`~` walks generations backwards along first parents. `^` selects which parent of a merge. Everything else is a way of asking git to look something up for you instead of you pasting a sha.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Commit one" } },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Commit two" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" },
+    { "run": "git switch -q -c feature/side" },
+    { "write": { "path": "side.py", "content": "SIDE = True\n" } },
+    { "commit": { "message": "Side branch work" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "app.py", "content": "print('v3')\n" } },
+    { "commit": { "message": "Commit three on main" } },
+    { "run": "git merge -q --no-ff -m \"Merge the side branch\" feature/side" },
+    { "write": { "path": "app.py", "content": "print('v4')\n" } },
+    { "commit": { "message": "Commit four, after the merge" } }
+  ],
+  "steps": [
+    {
+      "title": "rev-parse is how you check your understanding",
+      "why": "`git rev-parse <expression>` resolves any revision expression to a sha and prints it. Every experiment below is safe, because rev-parse only reads.",
+      "commands": ["git log --oneline --graph", "git rev-parse HEAD", "git rev-parse --short HEAD", "git rev-parse --abbrev-ref HEAD"],
+      "expect": "The current commit, three ways."
+    },
+    {
+      "title": "Tilde walks generations back",
+      "why": "`HEAD~1` is the parent, `HEAD~2` its parent, and so on — always following the FIRST parent. On a linear history it counts commits; through a merge it stays on the mainline.",
+      "commands": ["git log --oneline -1 HEAD", "git log --oneline -1 HEAD~1", "git log --oneline -1 HEAD~2", "git log --oneline -1 HEAD~3"],
+      "expect": "Four, then the merge, then commit three, then commit two — never straying onto the side branch.",
+      "verify": [
+        { "cmd": "git log --format=%s -1 HEAD~1", "contains": "Merge the side branch",
+          "label": "~1 is the parent" },
+        { "cmd": "git log --format=%s -1 HEAD~3", "contains": "Commit two",
+          "label": "~3 walks three generations back along first parents" }
+      ]
+    },
+    {
+      "title": "Caret selects which parent",
+      "why": "On a merge, `^1` is the branch you were on and `^2` is the branch merged in. `HEAD^` with no number means `^1`, which is why `HEAD^` and `HEAD~1` are the same on ordinary commits and differ only in intent.",
+      "commands": ["git log --format='%h %s' -1 HEAD~1", "git log --format='%h %s' -1 HEAD~1^1", "git log --format='%h %s' -1 HEAD~1^2", "sh -c 'git rev-list --parents -n 1 HEAD~1'"],
+      "expect": "^1 gives the main line, ^2 gives the side branch tip.",
+      "verify": [
+        { "cmd": "git log --format=%s -1 HEAD~1^2", "contains": "Side branch work",
+          "label": "^2 selects the merged-in branch",
+          "hint": "the second parent of a merge is the branch that was merged" },
+        { "cmd": "git log --format=%s -1 HEAD~1^1", "contains": "Commit three",
+          "label": "^1 stays on the mainline" }
+      ]
+    },
+    {
+      "title": "Combine them",
+      "why": "Expressions chain left to right: `HEAD~1^2~1` means go back one, take the second parent, then back one more. This is how you name a commit deep inside a merged branch without ever seeing its sha.",
+      "commands": ["git log --format='%h %s' -1 HEAD~1^2", "git log --format='%h %s' -1 HEAD~1^2~1", "git log --format='%h %s' -1 HEAD~2^"],
+      "expect": "Each expression lands somewhere specific and predictable."
+    },
+    {
+      "title": "Reflog positions with @{n}",
+      "why": "`main@{1}` is where the branch pointed one move ago — a different question from `main~1`, which is one commit back in history. This distinction is the whole basis of reflog recovery.",
+      "commands": ["git reflog show main", "git log --format='%h %s' -1 main@{1}", "git log --format='%h %s' -1 main~1", "sh -c 'git rev-parse main@{1} main~1'"],
+      "expect": "Two different commits — position-in-time versus position-in-history."
+    },
+    {
+      "title": "Find a commit by its message",
+      "why": "`:/text` resolves to the most recent commit whose message contains that text. Faster than a log-and-copy, and it composes with everything else.",
+      "commands": ["git log --format='%h %s' -1 :/Side", "git show --stat :/Side", "sh -c 'git rev-parse \":/Commit two\"'"],
+      "expect": "The side-branch commit, found by text.",
+      "verify": [
+        { "cmd": "git log --format=%s -1 :/Side", "contains": "Side branch work",
+          "label": "you can name a commit by its message",
+          "hint": "git show :/some text" }
+      ]
+    },
+    {
+      "title": "Peel a ref to the object you want",
+      "why": "`^{}` dereferences an annotated tag to its commit; `^{tree}` gets a commit's tree; `<rev>:<path>` names a blob inside it. This is how you address any object in the database from a human-readable starting point.",
+      "commands": ["git rev-parse v1.0", "git rev-parse v1.0^{}", "git rev-parse v1.0^{tree}", "sh -c 'git cat-file -t v1.0 && git cat-file -t v1.0^{} && git cat-file -t v1.0^{tree}'", "git show v1.0:app.py"],
+      "expect": "tag, commit, tree — three different objects from one name.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -t v1.0^{tree}'", "equals": "tree",
+          "label": "^{tree} peels a ref down to its tree" },
+        { "cmd": "git show v1.0:app.py", "contains": "v2",
+          "label": "<rev>:<path> reads a file from any commit" }
+      ]
+    },
+    {
+      "title": "Ranges, and the two shorthands nobody knows",
+      "why": "`A..B` and `A...B` you have met. `HEAD^!` means 'this commit but not its parents' — perfect for showing a single commit. `HEAD^@` means 'all parents of HEAD' — the building block of both.",
+      "commands": ["git log --oneline HEAD~3..HEAD", "git log --oneline HEAD^!", "sh -c 'git rev-parse HEAD^@'", "sh -c 'git rev-parse HEAD~1^@'"],
+      "expect": "A range, a single commit, and the parent lists behind the notation.",
+      "verify": [
+        { "cmd": "git log --oneline HEAD^!", "lines": 1,
+          "label": "^! names exactly one commit" },
+        { "cmd": "sh -c 'git rev-parse HEAD~1^@ | wc -l'", "equals": "2",
+          "label": "^@ lists a merge's two parents" }
+      ]
+    },
+    {
+      "title": "Use it instead of copying shas",
+      "why": "Every command takes these expressions — diff, show, restore, reset, cherry-pick, rebase. Writing `git restore --source=:/Commit two app.py` is both shorter and self-documenting compared with a pasted sha.",
+      "commands": ["sh -c 'git restore --source=\":/Commit two\" app.py'", "cat app.py", "git status --short", "git diff --stat HEAD"],
+      "expect": "The file restored from a commit named by its message.",
+      "verify": [
+        { "cmd": "cat app.py", "contains": "v2",
+          "label": "a file was restored using a message-based revision",
+          "hint": "git restore --source=':/text' <path>" }
+      ]
+    },
+    {
+      "title": "Clean up",
+      "why": "Put the file back. Every expression above was read-only except this last restore — revision syntax is a naming language, not an action.",
+      "commands": ["git restore --source=HEAD app.py", "git status --short", "cat app.py"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --format=%s -1 HEAD~1^2", "contains": "Side branch work",
+      "label": "you can name a commit on the merged-in branch without its sha",
+      "hint": "~ walks generations, ^n picks a parent" },
+    { "cmd": "sh -c 'git cat-file -t v1.0^{tree}'", "equals": "tree",
+      "label": "you can peel a tag to any object type" },
+    { "cmd": "git log --oneline HEAD^!", "lines": 1,
+      "label": "^! names a single commit" },
+    { "cmd": "git log --format=%s -1 :/Side", "contains": "Side branch work",
+      "label": ":/text finds a commit by message" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "nothing was left modified — revision syntax only names things" }
+  ],
+  "pitfalls": [
+    "`HEAD^2` is the second PARENT; `HEAD~2` is two commits back. On a non-merge commit `^2` simply fails, which is the quickest way to remember the difference.",
+    "`^` is a special character in Windows cmd.exe and must be doubled or quoted. In PowerShell and bash it is fine.",
+    "`main@{1}` is a reflog position, not a commit ancestor. After a reset the two point at completely different places — which is exactly what makes recovery possible.",
+    "`:/text` searches from HEAD backwards and takes the first match. In a repository with repeated messages it may not be the one you meant.",
+    "`git rev-parse <expr>` is free and instant. When an expression matters, check it there before putting it in a `reset --hard`."
+  ],
+  "cheatsheet": [
+    ["HEAD~n", "n generations back, first parents only"],
+    ["HEAD^n", "the nth parent of a merge (^ alone means ^1)"],
+    ["HEAD~1^2~1", "expressions chain left to right"],
+    ["main@{n}", "where the branch pointed n moves ago"],
+    [":/text", "the most recent commit whose message contains text"],
+    ["<rev>^{}", "peel an annotated tag to its commit"],
+    ["<rev>^{tree} / <rev>:<path>", "a commit's tree / a file inside it"],
+    ["<rev>^!", "just this commit, excluding its parents"],
+    ["git rev-parse <expr>", "check any expression without acting on it"]
+  ]
+}

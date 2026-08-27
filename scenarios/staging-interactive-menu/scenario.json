@@ -1,0 +1,158 @@
+{
+  "id": "staging-interactive-menu",
+  "title": "git add -i: the menu almost nobody opens",
+  "category": "staging",
+  "level": "advanced",
+  "order": 6,
+  "duration_min": 14,
+  "summary": "Behind `git add -p` there is a whole interactive mode: status, update, revert, add-untracked, patch and diff. Walk the menu, stage by number, and unstage without remembering a single flag.",
+  "concepts": ["git add -i", "update vs revert", "selecting by number and range", "add untracked", "patch mode from the menu", "diff of what is staged"],
+  "mental_model": "`add -i` is a menu over the index. Each entry maps to a command you already know — update is `git add`, revert is `git restore --staged`, patch is `git add -p` — with a file picker in front of it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\nRAMP = False\n" } },
+    { "write": { "path": "dosing.py", "content": "RATE = 1.0\n" } },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "commit": { "message": "Add controller modules" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\nRAMP = True\n" } },
+    { "write": { "path": "dosing.py", "content": "RATE = 1.35\n" } },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 31.0\n" } },
+    { "write": { "path": "scratch.md", "content": "# Scratch notes\n\nNot for committing.\n" } },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Open the menu and read it",
+      "why": "Option 1 prints a table of every changed file with its staged and unstaged line counts. The eight commands are the whole feature — `add -p` is just option 5 with the picker skipped.",
+      "commands": ["sh -c 'printf \"1\\nq\\n\" | git add -i'"],
+      "expect": "A status table, the command list, and 'Bye.' when q quits.",
+      "verify": [
+        { "cmd": "sh -c 'printf \"1\\nq\\n\" | git add -i'",
+          "contains": ["*** Commands ***", "[s]tatus", "[p]atch"],
+          "label": "the interactive menu is available",
+          "hint": "note the menu prints [s]tatus, not status — the bracket is in the output" }
+      ]
+    },
+    {
+      "title": "Stage one file by number",
+      "why": "`2` is update. It lists the files, you type a number, then a blank line confirms the selection. No paths typed, no tab completion needed — this is why it beats `git add` on a repository with long paths.",
+      "actions": [
+        { "run": "sh -c 'printf \"2\\n1\\n\\nq\\n\" | git add -i > /dev/null'" }
+      ],
+      "commands": ["git status --short", "git diff --cached --stat"],
+      "expect": "alerts.py staged; the other two still unstaged.",
+      "verify": [
+        { "cmd": "git diff --cached --name-only", "equals": "alerts.py",
+          "label": "exactly one file was staged from the menu",
+          "hint": "2 (update), then the file's number, then a blank line" }
+      ]
+    },
+    {
+      "title": "Stage a range",
+      "why": "The picker takes ranges and multiple selections: `1-2`, or `1 3`, or `*` for everything. On a twenty-file change this is dramatically faster than typing paths.",
+      "actions": [
+        { "run": "sh -c 'printf \"2\\n1-2\\n\\nq\\n\" | git add -i > /dev/null'" }
+      ],
+      "commands": ["git status --short", "git diff --cached --name-only"],
+      "expect": "Both remaining tracked files staged in one selection.",
+      "verify": [
+        { "cmd": "sh -c 'git diff --cached --name-only | wc -l'", "equals": "3",
+          "label": "a range selection staged the rest",
+          "hint": "type 1-2 at the picker" }
+      ]
+    },
+    {
+      "title": "Revert one back out",
+      "why": "`3` is revert, which unstages — the menu's name for `git restore --staged`. Note it works from the same numbered list, so you never have to think about which flag unstages what.",
+      "actions": [
+        { "run": "sh -c 'printf \"3\\n2\\n\\nq\\n\" | git add -i > /dev/null'" }
+      ],
+      "commands": ["git status --short", "git diff --cached --name-only", "git diff --name-only"],
+      "expect": "One file moved back to the unstaged column, its edit intact.",
+      "verify": [
+        { "cmd": "sh -c 'git diff --cached --name-only | wc -l'", "equals": "2",
+          "label": "revert unstaged one file",
+          "hint": "3 (revert), then its number" },
+        { "cmd": "git diff --name-only", "not_empty": true,
+          "label": "…and the edit itself survived" }
+      ]
+    },
+    {
+      "title": "Add an untracked file without typing its name",
+      "why": "`4` lists only untracked files. It is the safe way to add new files on a repository with build output lying around — you pick from a list rather than firing `git add -A` and hoping.",
+      "actions": [
+        { "run": "sh -c 'printf \"4\\n1\\n\\nq\\n\" | git add -i > /dev/null'" }
+      ],
+      "commands": ["git status --short", "git diff --cached --name-only"],
+      "expect": "README.md staged; scratch.md still untracked because you did not select it.",
+      "verify": [
+        { "cmd": "git diff --cached --name-only", "contains": "README.md",
+          "label": "an untracked file was added from the menu",
+          "hint": "4 (add untracked), then its number" },
+        { "cmd": "git status --porcelain", "contains": "?? scratch.md",
+          "label": "…and the one you did not pick stayed untracked" }
+      ]
+    },
+    {
+      "title": "Review what you have assembled",
+      "why": "`6` is diff, and it shows the STAGED changes against HEAD — the same thing as `git diff --cached`. Reviewing here, inside the menu, is the habit that stops half-staged commits.",
+      "commands": ["sh -c 'printf \"6\\n*\\n\\nq\\n\" | git add -i'", "git diff --cached --stat"],
+      "expect": "The diff of everything currently staged."
+    },
+    {
+      "title": "Drop into patch mode from the menu",
+      "why": "`5` is patch — the hunk-by-hunk picker you know as `git add -p`, reached with a file selector in front of it. Same keys once you are in: y, n, s to split, e to edit, q to quit.",
+      "actions": [
+        { "run": "sh -c 'printf \"3\\n*\\n\\nq\\n\" | git add -i > /dev/null'" },
+        { "run": "sh -c 'printf \"5\\n1\\n\\ny\\nq\\n\" | git add -i > /dev/null'" }
+      ],
+      "commands": ["git status --short", "git diff --cached --stat", "git diff --cached"],
+      "expect": "One file's hunk staged through the patch picker, everything else unstaged again.",
+      "verify": [
+        { "cmd": "sh -c 'git diff --cached --name-only | wc -l'", "equals": "1",
+          "label": "patch mode staged a single file's hunk",
+          "hint": "5 (patch), pick a file, then y to stage the hunk" }
+      ]
+    },
+    {
+      "title": "Commit what you chose",
+      "why": "Nothing about the menu changes what a commit is. It is a faster way to build the index, and the index is what gets committed — as always.",
+      "commands": ["git commit -q -m \"Raise the alert threshold\"", "git show --stat HEAD", "git status --short"],
+      "verify": [
+        { "cmd": "sh -c 'git show --stat --name-only --format= HEAD | wc -l'", "equals": "1",
+          "label": "the commit contains exactly what you selected" },
+        { "cmd": "git status --porcelain", "contains": "?? scratch.md",
+          "label": "the scratch file was never committed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git show --stat --name-only --format= HEAD | wc -l'", "equals": "1",
+      "label": "the commit was assembled through the interactive menu",
+      "hint": "git add -i, then 5 for patch mode" },
+    { "cmd": "git status --porcelain", "contains": "?? scratch.md",
+      "label": "the scratch file stayed untracked throughout",
+      "hint": "option 4 lists untracked files so you can pick rather than sweep" },
+    { "cmd": "git log --oneline", "lines": 2,
+      "label": "one new commit on top of the setup" },
+    { "cmd": "git diff --name-only", "not_empty": true,
+      "label": "the changes you deliberately left out are still in the working tree" }
+  ],
+  "pitfalls": [
+    "`update` stages and `revert` unstages — the names come from the index's point of view, not the working tree's. `revert` here has nothing to do with `git revert`.",
+    "A blank line confirms your selection; typing `q` before it discards the selection silently.",
+    "`add -i` shows only tracked files under update and revert. New files appear solely under option 4 — the same split that catches people out with `git commit -a`.",
+    "`git add -p` is the same code path with the picker skipped. If you only ever want hunks, skip the menu.",
+    "The menu is not scriptable and reads stdin, so it hangs in a CI job. Use the plumbing commands in scripts."
+  ],
+  "cheatsheet": [
+    ["git add -i", "open the interactive menu"],
+    ["1 status", "staged and unstaged line counts per file"],
+    ["2 update", "stage selected files (git add)"],
+    ["3 revert", "unstage selected files (git restore --staged)"],
+    ["4 add untracked", "pick new files from a list"],
+    ["5 patch", "hunk-by-hunk staging (git add -p)"],
+    ["6 diff", "review what is staged"],
+    ["1-3, 1 4, *", "the picker takes ranges, lists and everything"]
+  ]
+}
