@@ -16,6 +16,8 @@
   </div>
   <div class="topbar-right">
     <input id="search" type="search" placeholder="Search scenarios…  (/)" autocomplete="off">
+    <button id="next-unsolved" class="ghost" title="Jump to the next scenario you have not solved (n)">Next unsolved</button>
+    <button id="show-cheatsheet" class="ghost" title="Every command from the scenarios you have solved (c)">Cheatsheet</button>
     <div class="progress-pill"><span id="progress-count">0</span> solved</div>
   </div>
 </header>
@@ -23,7 +25,18 @@
 <main class="layout">
 
   <aside class="pane catalog" id="catalog">
-    <div class="pane-head">Scenarios <span class="muted" id="catalog-total"></span></div>
+    <div class="pane-head">
+      Scenarios <span class="muted" id="catalog-total"></span>
+      <div class="progress-track" title="overall progress"><div id="progress-bar" class="progress-fill"></div></div>
+    </div>
+    <div class="filters" id="filters">
+      <button class="filter active" data-level="">all</button>
+      <button class="filter" data-level="beginner">beginner</button>
+      <button class="filter" data-level="intermediate">intermediate</button>
+      <button class="filter" data-level="advanced">advanced</button>
+      <button class="filter" data-level="expert">expert</button>
+      <button class="filter toggle" id="filter-unsolved" title="hide the ones you have solved">unsolved only</button>
+    </div>
     <div id="catalog-list" class="catalog-list"></div>
   </aside>
 

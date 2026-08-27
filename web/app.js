@@ -24,6 +24,8 @@ const state = {
   stepDone: {},       // step index -> true
   history: [],        // terminal history
   historyAt: 0,
+  level: '',          // catalog filter: level
+  unsolvedOnly: false,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -48,8 +50,20 @@ async function loadCatalog() {
 }
 
 function renderProgressCount() {
+  const total = state.catalog ? state.catalog.total : 0;
   const solved = Object.values(state.progress).filter((p) => p.solved).length;
-  $('#progress-count').textContent = `${solved}/${state.catalog ? state.catalog.total : 0}`;
+  $('#progress-count').textContent = `${solved}/${total}`;
+  const bar = $('#progress-bar');
+  if (bar) bar.style.width = total ? `${Math.round((solved / total) * 100)}%` : '0%';
+}
+
+function matchesFilters(s, query) {
+  if (state.level && s.level !== state.level) return false;
+  if (state.unsolvedOnly && (state.progress[s.id] || {}).solved) return false;
+  if (!query) return true;
+  return s.title.toLowerCase().includes(query)
+    || s.id.toLowerCase().includes(query)
+    || (s.summary || '').toLowerCase().includes(query);
 }
 
 function renderCatalog() {
@@ -58,10 +72,7 @@ function renderCatalog() {
   list.innerHTML = '';
 
   state.catalog.categories.forEach((cat) => {
-    const items = cat.scenarios.filter((s) => !query
-      || s.title.toLowerCase().includes(query)
-      || s.id.toLowerCase().includes(query)
-      || (s.summary || '').toLowerCase().includes(query));
+    const items = cat.scenarios.filter((s) => matchesFilters(s, query));
     if (!items.length) return;
 
     const group = el('div', 'cat-group');
@@ -93,8 +104,94 @@ function renderCatalog() {
   });
 
   if (!list.children.length) {
-    list.appendChild(el('p', 'muted pad', 'Nothing matches that search.'));
+    const why = state.unsolvedOnly && !$('#search').value.trim() && !state.level
+      ? 'Everything is solved. That is the whole catalogue.'
+      : 'Nothing matches that search and filter.';
+    list.appendChild(el('p', 'muted pad', why));
   }
+}
+
+/* ------------------------------------------------------------- navigation */
+
+function allScenarios() {
+  return state.catalog ? state.catalog.categories.flatMap((c) => c.scenarios) : [];
+}
+
+function openNextUnsolved() {
+  const all = allScenarios();
+  const start = state.current ? all.findIndex((s) => s.id === state.current.id) + 1 : 0;
+  const ordered = all.slice(start).concat(all.slice(0, start));
+  const next = ordered.find((s) => !(state.progress[s.id] || {}).solved);
+  if (next) openScenario(next.id);
+  else termLine('# every scenario is solved', 't-out');
+}
+
+/* ------------------------------------------------------------- cheatsheet */
+
+async function showCheatsheet() {
+  const solved = allScenarios().filter((s) => (state.progress[s.id] || {}).solved);
+
+  const overlay = el('div', 'overlay');
+  const box = el('div', 'editor cheatsheet');
+  const head = el('div', 'editor-head');
+  head.appendChild(el('span', null, `Cheatsheet — ${solved.length} solved scenario${solved.length === 1 ? '' : 's'}`));
+  const close = el('button', 'ghost', 'Close');
+  close.onclick = () => overlay.remove();
+  head.appendChild(close);
+  box.appendChild(head);
+
+  const body = el('div', 'cheatsheet-body');
+  if (!solved.length) {
+    body.appendChild(el('p', 'muted',
+      'Solve a scenario and its commands collect here — a reference built from what you have actually done.'));
+  }
+
+  /* Fetch each solved scenario so we have its cheatsheet rows. */
+  for (const item of solved) {
+    /* sequential: the catalogue is small and this keeps the API calls tidy */
+    const full = await api.get(`/api/scenario/${item.id}`); // eslint-disable-line no-await-in-loop
+    if (!(full.cheatsheet || []).length) continue;
+    const section = el('div', 'cheat-section');
+    section.appendChild(el('h3', null, full.title));
+    const table = el('table', 'cheat');
+    full.cheatsheet.forEach(([cmd, what]) => {
+      const tr = el('tr');
+      tr.appendChild(el('td', null, cmd));
+      tr.appendChild(el('td', null, what));
+      table.appendChild(tr);
+    });
+    section.appendChild(table);
+    body.appendChild(section);
+  }
+
+  box.appendChild(body);
+
+  const foot = el('div', 'editor-foot');
+  foot.appendChild(el('span', 'muted', 'Built from the scenarios you have solved. Print or copy as you like.'));
+  const copy = el('button', null, 'Copy as text');
+  copy.onclick = async () => {
+    const lines = [];
+    body.querySelectorAll('.cheat-section').forEach((sec) => {
+      lines.push(`## ${sec.querySelector('h3').textContent}`);
+      sec.querySelectorAll('tr').forEach((tr) => {
+        const tds = tr.querySelectorAll('td');
+        lines.push(`  ${tds[0].textContent.padEnd(44)} ${tds[1].textContent}`);
+      });
+      lines.push('');
+    });
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      copy.textContent = 'Copied';
+    } catch (err) {
+      copy.textContent = 'Copy blocked by the browser';
+    }
+  };
+  foot.appendChild(copy);
+  box.appendChild(foot);
+
+  overlay.appendChild(box);
+  overlay.onclick = (ev) => { if (ev.target === overlay) overlay.remove(); };
+  document.body.appendChild(overlay);
 }
 
 /* ------------------------------------------------------------- lesson */
@@ -682,11 +779,38 @@ function markdown(src) {
 /* ------------------------------------------------------------- wiring */
 
 $('#search').addEventListener('input', renderCatalog);
+$('#next-unsolved').addEventListener('click', openNextUnsolved);
+$('#show-cheatsheet').addEventListener('click', showCheatsheet);
+
+document.querySelectorAll('.filter[data-level]').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.level = btn.dataset.level;
+    document.querySelectorAll('.filter[data-level]').forEach((b) => b.classList.toggle('active', b === btn));
+    renderCatalog();
+  });
+});
+
+$('#filter-unsolved').addEventListener('click', () => {
+  state.unsolvedOnly = !state.unsolvedOnly;
+  $('#filter-unsolved').classList.toggle('active', state.unsolvedOnly);
+  renderCatalog();
+});
 
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === '/' && document.activeElement.tagName !== 'INPUT') {
+  const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName);
+  if (ev.key === 'Escape') {
+    const overlay = document.querySelector('.overlay');
+    if (overlay) overlay.remove();
+    return;
+  }
+  if (typing) return;
+  if (ev.key === '/') {
     ev.preventDefault();
     $('#search').focus();
+  } else if (ev.key === 'n') {
+    openNextUnsolved();
+  } else if (ev.key === 'c') {
+    showCheatsheet();
   }
 });
 
