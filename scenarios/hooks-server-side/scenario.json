@@ -1,0 +1,129 @@
+{
+  "id": "hooks-server-side",
+  "title": "The hook nobody can bypass: pre-receive on the server",
+  "category": "hooks",
+  "level": "expert",
+  "order": 3,
+  "duration_min": 16,
+  "summary": "Client hooks are advisory. Install a pre-receive hook in the bare repository that rejects direct pushes to main and force pushes — and watch --no-verify fail to help.",
+  "concepts": ["pre-receive", "update hook", "stdin ref triples", "zero sha", "branch protection", "server-side enforcement"],
+  "mental_model": "`pre-receive` runs once per push on the server and reads lines of `<old-sha> <new-sha> <ref>` on stdin. Exit non-zero and the entire push is rejected atomically — nothing lands.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "Confirm the client-side gap",
+      "why": "Whatever you install locally, anyone can pass `--no-verify`, or push from a machine that never installed your hooks. The server is the only place a rule is actually a rule.",
+      "commands": ["git remote -v", "git log --oneline", "sh -c 'ls ../origin.git/hooks | head -5'"]
+    },
+    {
+      "title": "Install a pre-receive hook on the server",
+      "why": "It reads ref updates from stdin. A new sha of all zeroes means a branch deletion; an old sha of all zeroes means creation. Comparing with `merge-base --is-ancestor` detects a force push.",
+      "actions": [
+        { "cwd": "origin", "write": { "path": "hooks/pre-receive", "content": "#!/bin/sh\n# Server-side branch protection for main.\n\nZERO=0000000000000000000000000000000000000000\nstatus=0\n\nwhile read old new ref; do\n  case \"$ref\" in\n    refs/heads/main)\n      if [ \"$new\" = \"$ZERO\" ]; then\n        echo \"pre-receive: refusing to delete main\" >&2\n        status=1\n        continue\n      fi\n\n      if [ \"$old\" != \"$ZERO\" ] && ! git merge-base --is-ancestor \"$old\" \"$new\"; then\n        echo \"pre-receive: refusing force push to main (would discard commits)\" >&2\n        status=1\n        continue\n      fi\n\n      # Every commit reaching main must be a merge, or carry a Refs: trailer.\n      for sha in $(git rev-list \"$old\"..\"$new\" 2>/dev/null || git rev-list \"$new\"); do\n        parents=$(git rev-list --parents -n 1 \"$sha\" | wc -w)\n        if [ \"$parents\" -ge 3 ]; then\n          continue\n        fi\n        if ! git log -1 --format=%B \"$sha\" | grep -q '^Refs: '; then\n          subject=$(git log -1 --format=%s \"$sha\")\n          echo \"pre-receive: $sha ('$subject') has no 'Refs:' trailer\" >&2\n          status=1\n        fi\n      done\n      ;;\n  esac\ndone\n\nif [ \"$status\" -ne 0 ]; then\n  echo \"pre-receive: push rejected. Open a pull request instead.\" >&2\nfi\n\nexit $status\n" } },
+        { "cwd": "origin", "run": "sh -c 'chmod +x hooks/pre-receive'" }
+      ],
+      "commands": ["sh -c 'cat ../origin.git/hooks/pre-receive'"],
+      "verify": [
+        { "cmd": "sh -c 'test -x hooks/pre-receive && echo executable'", "cwd": "origin",
+          "contains": "executable", "label": "the server hook is installed and executable" }
+      ]
+    },
+    {
+      "title": "Push a commit with no ticket reference",
+      "why": "The hook walks every commit in the push and checks its message. One failure rejects the whole push — no partial application, which is what makes server hooks trustworthy.",
+      "actions": [
+        { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Raise the pump speed\"" }
+      ],
+      "commands": ["git push origin main", "git log --oneline origin/main"],
+      "expect": "remote: pre-receive: ... has no 'Refs:' trailer, and the push is rejected.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 1,
+          "label": "the server still has only the original commit" }
+      ]
+    },
+    {
+      "title": "Try to bypass it",
+      "why": "`--no-verify` skips *client* hooks. The server never sees that flag and does not care. This is the whole point: policy enforced where the code lands, not where it is written.",
+      "commands": ["git push --no-verify origin main", "git log --oneline origin/main"],
+      "expect": "Rejected exactly as before.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 1,
+          "label": "--no-verify did not help — server hooks cannot be bypassed" }
+      ]
+    },
+    {
+      "title": "Comply with the rule",
+      "why": "Amend the message to include the trailer the policy requires. Now the push is accepted — the rule was never about obstruction, it was about making history traceable.",
+      "actions": [
+        { "run": "git commit -q --amend -m \"Raise the pump speed\" --trailer \"Refs: ABH-204\"" }
+      ],
+      "commands": ["git log -1 --format=%B", "git push origin main", "git log --oneline origin/main"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 2,
+          "label": "the compliant push was accepted",
+          "hint": "add a Refs: trailer to the commit message" }
+      ]
+    },
+    {
+      "title": "Try a force push that would discard history",
+      "why": "Resetting back and force-pushing would delete a commit from the server. `merge-base --is-ancestor` catches exactly that case, while allowing ordinary fast-forwards.",
+      "actions": [
+        { "run": "git reset -q --hard HEAD~1" },
+        { "write": { "path": "other.py", "content": "OTHER = True\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Different work\" --trailer \"Refs: ABH-999\"" }
+      ],
+      "commands": ["git push --force origin main", "git log --oneline origin/main"],
+      "expect": "pre-receive: refusing force push to main.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Raise the pump speed",
+          "label": "the force push was refused and the commit survived",
+          "hint": "the hook compares old and new with merge-base --is-ancestor" }
+      ]
+    },
+    {
+      "title": "And a branch deletion",
+      "why": "A push with an all-zeroes new sha is a deletion. Blocking it for main is the last piece of branch protection — the same three rules GitHub's protected branches implement, in thirty lines of shell.",
+      "commands": ["git push origin --delete main", "sh -c 'cd ../origin.git && git branch'"],
+      "expect": "pre-receive: refusing to delete main.",
+      "verify": [
+        { "cmd": "git branch --list main", "cwd": "origin", "not_empty": true,
+          "label": "main still exists on the server" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Raise the pump speed",
+      "label": "the compliant commit reached the server",
+      "hint": "add a Refs: trailer, then push" },
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 2,
+      "label": "…and nothing non-compliant did" },
+    { "cmd": "git branch --list main", "cwd": "origin", "not_empty": true,
+      "label": "main survived the deletion attempt" },
+    { "cmd": "sh -c 'test -x hooks/pre-receive && echo yes'", "cwd": "origin", "contains": "yes",
+      "label": "the server hook is in place" }
+  ],
+  "pitfalls": [
+    "`pre-receive` runs once for the whole push; `update` runs once per ref. Use `update` when you want per-branch rules with independent outcomes.",
+    "Write diagnostics to stderr — git prefixes them with 'remote:' and shows them to the pusher. Anything on stdout is far less visible.",
+    "The hook runs on the server with the bare repository as its working directory. There is no working tree, so `git checkout` and friends will not behave as you expect.",
+    "Hosted forges do not let you install pre-receive hooks on ordinary plans. Their branch-protection settings are the same idea, managed for you.",
+    "A slow server hook slows every push for everyone. Keep the checks cheap and push heavy validation into CI."
+  ],
+  "cheatsheet": [
+    ["hooks/pre-receive", "server-side, once per push, reads stdin"],
+    ["read old new ref", "the triple for each ref being updated"],
+    ["new = 000...0", "the push is a deletion"],
+    ["old = 000...0", "the push creates a new branch"],
+    ["git merge-base --is-ancestor $old $new", "false means a force push"],
+    ["git rev-list $old..$new", "the commits being pushed"],
+    ["exit 1", "reject the entire push atomically"]
+  ]
+}

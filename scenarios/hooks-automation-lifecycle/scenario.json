@@ -1,0 +1,135 @@
+{
+  "id": "hooks-automation-lifecycle",
+  "title": "Hooks that help instead of blocking",
+  "category": "hooks",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "post-checkout, post-merge and post-commit cannot reject anything — they run after the fact. Use them to fix the small annoyances: stale dependencies after a branch switch, and a reminder when a lockfile changes.",
+  "concepts": ["post-checkout", "post-merge", "post-commit", "hook arguments", "non-blocking automation", "detecting changed files"],
+  "mental_model": "Hooks split into two families. The `pre-` ones gate an operation and can refuse it. The `post-` ones run afterwards, cannot stop anything, and exist purely to automate what a human would otherwise forget.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "requirements.txt", "content": "flask==3.0.0\n" } },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Add app and dependencies" } },
+    { "run": "git switch -q -c feature/new-deps" },
+    { "write": { "path": "requirements.txt", "content": "flask==3.0.0\nredis==5.0.1\nprometheus-client==0.20.0\n" } },
+    { "commit": { "message": "Add redis and metrics dependencies" } },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "The annoyance",
+      "why": "Switching to a branch that changed requirements.txt leaves your installed packages out of date. Nothing warns you; the app just fails at import time twenty minutes later.",
+      "commands": ["cat requirements.txt", "git diff --stat main feature/new-deps"]
+    },
+    {
+      "title": "Write a post-checkout hook",
+      "why": "It receives the previous HEAD, the new HEAD, and a flag: 1 for a branch switch, 0 for a file checkout. Diffing those two shas tells you exactly which files changed underneath you.",
+      "actions": [
+        { "write": { "path": ".git/hooks/post-checkout", "content": "#!/bin/sh\n# Warn when a branch switch changes dependency files.\n\nprev=\"$1\"\nnew=\"$2\"\nbranch_switch=\"$3\"\n\n[ \"$branch_switch\" = \"1\" ] || exit 0\n[ \"$prev\" = \"$new\" ] && exit 0\n\nchanged=$(git diff --name-only \"$prev\" \"$new\" 2>/dev/null | grep -E 'requirements.txt|package-lock.json|go.sum|Gemfile.lock')\n\nif [ -n \"$changed\" ]; then\n  echo \"----------------------------------------------\"\n  echo \"post-checkout: dependency files changed:\"\n  echo \"$changed\" | sed 's/^/  /'\n  echo \"post-checkout: run your install command before testing.\"\n  echo \"----------------------------------------------\"\n  git diff --stat \"$prev\" \"$new\" -- $changed\nfi\n\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/post-checkout'" }
+      ],
+      "commands": ["cat .git/hooks/post-checkout"]
+    },
+    {
+      "title": "Switch branches and watch it fire",
+      "why": "The hook prints its warning as part of the checkout output. It cannot block anything — a post hook's exit code is ignored — which is why it is safe to be chatty.",
+      "commands": ["git switch feature/new-deps", "cat requirements.txt", "git switch main"],
+      "expect": "The dependency warning printed on the way in and again on the way out."
+    },
+    {
+      "title": "Add a post-merge hook for the same reason",
+      "why": "`git pull` changes your dependencies just as often as a branch switch does. post-merge takes one argument — whether it was a squash merge — and `HEAD@{1}` is where you were before it.",
+      "actions": [
+        { "write": { "path": ".git/hooks/post-merge", "content": "#!/bin/sh\n# Same warning, for merges and pulls.\n\nchanged=$(git diff --name-only HEAD@{1} HEAD 2>/dev/null | grep -E 'requirements.txt|package-lock.json|go.sum')\n\nif [ -n \"$changed\" ]; then\n  echo \"post-merge: dependencies changed in this merge:\"\n  echo \"$changed\" | sed 's/^/  /'\n  echo \"post-merge: reinstall before running anything.\"\nfi\n\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/post-merge'" }
+      ],
+      "commands": ["git merge --no-ff -m \"Merge new dependencies\" feature/new-deps", "cat requirements.txt", "git log --oneline --graph -3"],
+      "expect": "The merge succeeds and the hook reports the dependency change.",
+      "verify": [
+        { "cmd": "cat requirements.txt", "contains": "redis",
+          "label": "the merge brought the new dependencies in" }
+      ]
+    },
+    {
+      "title": "post-commit, for a local reminder",
+      "why": "It runs after the commit exists, so it cannot change or reject it. Useful for recording what you did — here, appending to a local scratch log that is never committed.",
+      "actions": [
+        { "write": { "path": ".git/hooks/post-commit", "content": "#!/bin/sh\n# Append every commit to a local, untracked worklog.\n\nprintf '%s  %s\\n' \"$(git log -1 --format=%h)\" \"$(git log -1 --format=%s)\" >> .git/worklog.txt\necho \"post-commit: logged $(git log -1 --format=%h) to .git/worklog.txt\"\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/post-commit'" },
+        { "write": { "path": "metrics.py", "content": "from prometheus_client import Counter\n\nDOSES = Counter('doses_total', 'Doses delivered')\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add dose counter metric\"" }
+      ],
+      "commands": ["cat .git/worklog.txt", "git log --oneline -2"],
+      "verify": [
+        { "cmd": "sh -c 'cat .git/worklog.txt'", "contains": "Add dose counter metric",
+          "label": "the post-commit hook recorded the commit",
+          "hint": "post-commit runs after the commit object exists" }
+      ]
+    },
+    {
+      "title": "Prove a post hook cannot block",
+      "why": "Give post-commit a non-zero exit and commit again. Git prints nothing about it and the commit stands — post hooks are advisory by design, so a broken one cannot wedge your repository.",
+      "actions": [
+        { "write": { "path": ".git/hooks/post-commit", "content": "#!/bin/sh\necho \"post-commit: I am going to fail on purpose\"\nexit 1\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/post-commit'" },
+        { "write": { "path": "notes.md", "content": "# Notes\n" } },
+        { "run": "git add -A" }
+      ],
+      "commands": ["git commit -m \"Add notes\"", "git log --oneline -2"],
+      "expect": "The hook fails loudly and the commit is created anyway.",
+      "verify": [
+        { "cmd": "git log --pretty=%s -1", "equals": "Add notes",
+          "label": "the failing post hook did not block the commit" }
+      ]
+    },
+    {
+      "title": "Share the useful ones",
+      "why": "Same mechanism as always: track them and set `core.hooksPath`. Automation that only exists on your machine is a personal preference, not a team practice.",
+      "actions": [
+        { "run": "sh -c 'mkdir -p .githooks && cp .git/hooks/post-checkout .git/hooks/post-merge .githooks/ && chmod +x .githooks/*'" },
+        { "run": "git add .githooks" },
+        { "run": "git commit -q -m \"Track dependency-warning hooks\"" },
+        { "run": "git config core.hooksPath .githooks" }
+      ],
+      "commands": ["ls .githooks", "git config --get core.hooksPath", "git log --oneline"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": [".githooks/post-checkout", ".githooks/post-merge"],
+          "label": "the helpful hooks are tracked" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "contains": [".githooks/post-checkout", ".githooks/post-merge"],
+      "label": "the dependency-warning hooks are shared with the team",
+      "hint": "copy them into .githooks, commit, set core.hooksPath" },
+    { "cmd": "cat requirements.txt", "contains": ["redis", "prometheus-client"],
+      "label": "the dependency branch was merged" },
+    { "cmd": "sh -c 'cat .git/worklog.txt'", "contains": "Add dose counter metric",
+      "label": "post-commit wrote its local worklog" },
+    { "cmd": "git log --pretty=%s -2", "contains": "Add notes",
+      "label": "a failing post hook could not block a commit",
+      "hint": "post hooks' exit codes are ignored by design" },
+    { "cmd": "git config --get core.hooksPath", "equals": ".githooks",
+      "label": "hooks come from the tracked directory" }
+  ],
+  "pitfalls": [
+    "post-checkout also fires for `git checkout -- <file>`. Check the third argument is 1, or your hook runs constantly.",
+    "post-merge cannot tell you what a rebase did — rebase fires post-checkout instead, once per replayed commit in some versions.",
+    "Never run an installer automatically from a hook. Tell the human what changed; silently mutating someone's environment is worse than the stale dependency.",
+    "post hooks' exit codes are ignored. If you need to block something, you need a `pre-` hook.",
+    "Anything written under `.git/` is never committed and never cloned — fine for a personal worklog, useless for anything shared."
+  ],
+  "cheatsheet": [
+    ["post-checkout $prev $new $is_branch", "after a checkout or branch switch"],
+    ["post-merge $is_squash", "after a merge or pull"],
+    ["post-commit", "after a commit is created"],
+    ["post-rewrite", "after amend or rebase rewrites commits"],
+    ["git diff --name-only $prev $new", "what changed underneath you"],
+    ["git diff --name-only HEAD@{1} HEAD", "what a merge brought in"],
+    ["git config core.hooksPath .githooks", "share them with the team"]
+  ]
+}

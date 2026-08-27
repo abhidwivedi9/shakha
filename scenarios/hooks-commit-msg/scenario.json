@@ -1,0 +1,125 @@
+{
+  "id": "hooks-commit-msg",
+  "title": "Enforce a commit message format — and fill it in automatically",
+  "category": "hooks",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "Reject messages that do not follow Conventional Commits, then add a second hook that prepends the ticket id from your branch name so nobody has to type it.",
+  "concepts": ["commit-msg hook", "prepare-commit-msg hook", "hook arguments", "conventional commits", "editing the message file"],
+  "mental_model": "`prepare-commit-msg` runs before you edit and can write into the message file. `commit-msg` runs after and can accept or reject it. Both receive the path to the message file as their first argument.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "chore: initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Write the validator",
+      "why": "`$1` is the path to a file containing the proposed message. Read it, test it, exit non-zero to reject. Note it skips merge and fixup messages — a validator that blocks `git merge` is a validator people disable.",
+      "actions": [
+        { "write": { "path": ".git/hooks/commit-msg", "content": "#!/bin/sh\n# Enforce Conventional Commits: type(scope)?: subject\n\nmsg_file=\"$1\"\nsubject=$(head -1 \"$msg_file\")\n\n# Let git's own generated messages through.\ncase \"$subject\" in\n  \"Merge \"*|\"Revert \"*|\"fixup! \"*|\"squash! \"*) exit 0 ;;\nesac\n\nif ! echo \"$subject\" | grep -qE '^(feat|fix|docs|refactor|test|chore|perf)(\\([a-z0-9-]+\\))?: .{6,}'; then\n  echo \"commit-msg: rejected: '$subject'\" >&2\n  echo \"commit-msg: expected  <type>(<scope>): <subject of at least 6 chars>\" >&2\n  echo \"commit-msg: types     feat fix docs refactor test chore perf\" >&2\n  exit 1\nfi\n\nif [ ${#subject} -gt 72 ]; then\n  echo \"commit-msg: subject is ${#subject} characters, keep it under 72\" >&2\n  exit 1\nfi\n\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/commit-msg'" }
+      ],
+      "commands": ["cat .git/hooks/commit-msg"]
+    },
+    {
+      "title": "Watch a sloppy message get rejected",
+      "why": "'fixed stuff' tells a future reader nothing. The hook refuses it before the commit object is created, so there is nothing to amend afterwards.",
+      "actions": [
+        { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+        { "run": "git add pump.py" }
+      ],
+      "commands": ["git commit -m \"fixed stuff\"", "git log --oneline"],
+      "expect": "The hook's explanation and exit code 1.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 1, "label": "the sloppy message was rejected" }
+      ]
+    },
+    {
+      "title": "And an over-long one",
+      "why": "A subject that runs past 72 characters is truncated in every tool that shows a log. The check is trivial and the benefit compounds across thousands of commits.",
+      "commands": ["git commit -m \"feat(pump): raise the pump speed to sixteen hundred revolutions per minute for the new impeller assembly\"", "git log --oneline"],
+      "expect": "Rejected for length.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 1, "label": "the over-long subject was rejected too" }
+      ]
+    },
+    {
+      "title": "Write one that passes",
+      "why": "Type, scope, imperative subject. Machine-readable enough for a changelog generator, human-readable enough to scan.",
+      "commands": ["git commit -m \"feat(pump): raise speed to 1600 RPM for the new impeller\"", "git log --oneline"],
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2, "label": "the conventional message was accepted" }
+      ]
+    },
+    {
+      "title": "Stop typing the ticket id",
+      "why": "`prepare-commit-msg` runs before the editor opens and can rewrite the message file. Here it extracts the ticket from the branch name and appends it as a trailer — the information was already there, so a human should not have to retype it.",
+      "actions": [
+        { "write": { "path": ".git/hooks/prepare-commit-msg", "content": "#!/bin/sh\n# Append a Refs: trailer taken from the branch name, e.g. feature/ABH-204-thing\n\nmsg_file=\"$1\"\nsource=\"$2\"\n\n# Do not touch merges, squashes, or an amend of an existing message.\ncase \"$source\" in\n  merge|squash|commit) exit 0 ;;\nesac\n\nbranch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null) || exit 0\nticket=$(echo \"$branch\" | grep -oE '[A-Z]+-[0-9]+' | head -1)\n[ -n \"$ticket\" ] || exit 0\n\nif ! grep -q \"Refs: $ticket\" \"$msg_file\"; then\n  printf '\\nRefs: %s\\n' \"$ticket\" >> \"$msg_file\"\nfi\n\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/prepare-commit-msg'" },
+        { "run": "git switch -q -c feature/ABH-204-dosing" },
+        { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+        { "run": "git add dosing.py" }
+      ],
+      "commands": ["git commit -m \"feat(dosing): add calibrated dose calculation\"", "git log -1 --format=%B"],
+      "expect": "The message you typed, plus a Refs: ABH-204 trailer you did not.",
+      "verify": [
+        { "cmd": "git log -1 --format=%B", "contains": "Refs: ABH-204",
+          "label": "the ticket was added automatically from the branch name",
+          "hint": "prepare-commit-msg appends the trailer" }
+      ]
+    },
+    {
+      "title": "Confirm it is machine-readable",
+      "why": "Because it is a proper trailer, `%(trailers)` extracts it. Your changelog generator, release notes and ticket-linking now work without anyone changing their habits.",
+      "commands": ["git log -1 --format='%(trailers:key=Refs,valueonly)'", "git log --format='%h %s | %(trailers:key=Refs,valueonly)' -3"],
+      "verify": [
+        { "cmd": "git log -1 --format=%(trailers:key=Refs,valueonly)", "contains": "ABH-204",
+          "label": "the trailer parses as structured data" }
+      ]
+    },
+    {
+      "title": "Share both hooks",
+      "why": "Same pattern as any hook: track them and point `core.hooksPath` at the directory. A format nobody can install is a format nobody follows.",
+      "actions": [
+        { "run": "sh -c 'mkdir -p .githooks && cp .git/hooks/commit-msg .git/hooks/prepare-commit-msg .githooks/ && chmod +x .githooks/*'" },
+        { "run": "git add .githooks" },
+        { "run": "git commit -q -m \"chore(hooks): track commit message hooks\"" },
+        { "run": "git config core.hooksPath .githooks" }
+      ],
+      "commands": ["ls .githooks", "git config --get core.hooksPath", "git log --oneline"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": [".githooks/commit-msg", ".githooks/prepare-commit-msg"],
+          "label": "both hooks are tracked in the repository" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --pretty=%s", "not_contains": "fixed stuff",
+      "label": "no sloppy message reached history",
+      "hint": "the commit-msg hook must exit non-zero to reject" },
+    { "cmd": "git log -1 --format=%(trailers:key=Refs,valueonly)", "contains": "ABH-204",
+      "label": "the ticket trailer is generated from the branch name",
+      "hint": "prepare-commit-msg appends it" },
+    { "cmd": "git ls-files", "contains": [".githooks/commit-msg", ".githooks/prepare-commit-msg"],
+      "label": "both hooks are tracked so the team gets them" },
+    { "cmd": "git config --get core.hooksPath", "equals": ".githooks",
+      "label": "core.hooksPath is set" }
+  ],
+  "pitfalls": [
+    "Always let `Merge`, `Revert`, `fixup!` and `squash!` messages through. A validator that blocks them makes rebasing and merging impossible.",
+    "`commit-msg` receives a file path, not the message text. Read `$1`; do not expect it on stdin.",
+    "`prepare-commit-msg` also runs for merges and amends — check `$2` (the source) or you will corrupt generated messages.",
+    "Client-side message rules are advisory. If the format gates a release pipeline, validate it again in CI."
+  ],
+  "cheatsheet": [
+    [".git/hooks/commit-msg \"$1\"", "validate the proposed message file"],
+    [".git/hooks/prepare-commit-msg \"$1\" \"$2\"", "write into it before editing"],
+    ["case \"$2\" in merge|squash|commit) exit 0", "skip generated messages"],
+    ["git symbolic-ref --short HEAD", "the current branch, for ticket extraction"],
+    ["git log --format='%(trailers:key=Refs,valueonly)'", "read the trailer back"],
+    ["git commit --no-verify", "bypass — works on these too"]
+  ]
+}

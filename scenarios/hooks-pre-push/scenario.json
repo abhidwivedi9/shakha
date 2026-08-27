@@ -1,0 +1,123 @@
+{
+  "id": "hooks-pre-push",
+  "title": "Never push a branch whose tests fail",
+  "category": "hooks",
+  "level": "intermediate",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "pre-push runs after you type push and before anything leaves your machine. Use it for the checks that are too slow for pre-commit — a test run, a lint pass, a WIP guard.",
+  "concepts": ["pre-push hook", "stdin ref lines", "running tests in a hook", "blocking WIP commits", "cost of slow hooks"],
+  "mental_model": "`pre-push` gets the remote name and URL as arguments, and one `<local-ref> <local-sha> <remote-ref> <remote-sha>` line per ref on stdin. It is the last cheap moment to catch a mistake before other people see it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "calc.py", "content": "def total(items):\n    return sum(items)\n" } },
+    { "write": { "path": "run_tests.sh", "content": "#!/bin/sh\npython -c \"import calc; assert calc.total([1,2,3]) == 6; print('tests passed')\"\n" } },
+    { "commit": { "message": "Add calc and its tests" } },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "Install the hook",
+      "why": "It reads the refs being pushed from stdin, refuses anything whose commits look like work in progress, and runs the test suite once. Slow checks belong here rather than in pre-commit, because you push far less often than you commit.",
+      "actions": [
+        { "write": { "path": ".git/hooks/pre-push", "content": "#!/bin/sh\n# Block WIP commits and failing tests from leaving this machine.\n\nremote=\"$1\"\nZERO=0000000000000000000000000000000000000000\nstatus=0\n\nwhile read local_ref local_sha remote_ref remote_sha; do\n  [ \"$local_sha\" = \"$ZERO\" ] && continue   # deletion, nothing to check\n\n  if [ \"$remote_sha\" = \"$ZERO\" ]; then\n    range=\"$local_sha\"\n  else\n    range=\"$remote_sha..$local_sha\"\n  fi\n\n  if git log --format=%s $range | grep -qiE '^(wip|fixup!|squash!|temp|do not push)'; then\n    echo \"pre-push: $local_ref contains work-in-progress commits\" >&2\n    git log --oneline $range | head -5 >&2\n    status=1\n  fi\ndone\n\nif [ \"$status\" -eq 0 ]; then\n  echo \"pre-push: running tests...\" >&2\n  if ! sh run_tests.sh >/dev/null 2>&1; then\n    echo \"pre-push: tests failed, refusing to push to $remote\" >&2\n    sh run_tests.sh >&2\n    status=1\n  fi\nfi\n\nexit $status\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/pre-push'" }
+      ],
+      "commands": ["cat .git/hooks/pre-push", "sh run_tests.sh"],
+      "expect": "The tests pass right now, so the hook would allow a push."
+    },
+    {
+      "title": "Break the code and try to push",
+      "why": "The commit itself succeeds — pre-commit has no opinion about tests. The push is where it is caught, which is exactly the right boundary: your local history can be messy, what you publish should not be broken.",
+      "actions": [
+        { "write": { "path": "calc.py", "content": "def total(items):\n    return sum(items) + 1\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Adjust total calculation\"" }
+      ],
+      "commands": ["git log --oneline", "git push origin main", "git log --oneline origin/main"],
+      "expect": "The commit exists locally; the push is refused with the test output.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 1,
+          "label": "the broken code never reached the server" },
+        { "cmd": "git log --oneline", "lines": 2,
+          "label": "…but the commit is still safely on your machine" }
+      ]
+    },
+    {
+      "title": "Fix it and push",
+      "why": "With the tests passing the hook exits zero and git proceeds as normal. The hook is invisible when everything is fine, which is what makes it tolerable.",
+      "actions": [
+        { "write": { "path": "calc.py", "content": "def total(items):\n    return sum(items)\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Revert the incorrect adjustment\"" }
+      ],
+      "commands": ["git push origin main", "git log --oneline origin/main"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 3,
+          "label": "the passing branch pushed cleanly" }
+      ]
+    },
+    {
+      "title": "Now the WIP guard",
+      "why": "A commit titled 'wip' is a note to yourself, not something a reviewer should see. The hook scans only the commits actually being pushed, using the remote sha git hands it on stdin.",
+      "actions": [
+        { "run": "git switch -q -c feature/dosing" },
+        { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"wip: dosing sketch\"" }
+      ],
+      "commands": ["git push origin feature/dosing", "git branch -r"],
+      "expect": "Refused, with the offending commits listed.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": "feature/dosing",
+          "label": "the WIP branch was not published" }
+      ]
+    },
+    {
+      "title": "Tidy the history, then push",
+      "why": "Amend into a real message and the same push succeeds. The hook has nudged you into the habit of publishing readable history without anyone having to review it first.",
+      "actions": [
+        { "write": { "path": "dosing.py", "content": "def dose(ml):\n    if ml <= 0:\n        raise ValueError('positive only')\n    return ml * 1.35\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q --amend -m \"Add calibrated dosing with validation\"" }
+      ],
+      "commands": ["git push origin feature/dosing", "git branch -r", "git log --oneline"],
+      "verify": [
+        { "cmd": "git branch -r", "contains": "feature/dosing",
+          "label": "the tidied branch published fine",
+          "hint": "amend the wip message to something real" }
+      ]
+    },
+    {
+      "title": "Know the escape hatch and its cost",
+      "why": "`--no-verify` skips it. Legitimate when you need to publish a branch for a colleague to look at mid-debugging — and a reason the same checks belong in CI as well.",
+      "commands": ["git switch main", "git log --oneline --all --decorate --graph"],
+      "expect": "Nothing to run; the point is knowing the flag exists."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 3,
+      "label": "only passing code reached the server",
+      "hint": "the hook must exit non-zero when run_tests.sh fails" },
+    { "cmd": "git branch -r", "contains": "feature/dosing",
+      "label": "the feature branch published once its message was tidied" },
+    { "cmd": "git log --pretty=%s feature/dosing", "not_contains": "wip",
+      "label": "no work-in-progress commit was published" },
+    { "cmd": "sh -c 'test -x .git/hooks/pre-push && echo yes'", "contains": "yes",
+      "label": "the pre-push hook is installed" }
+  ],
+  "pitfalls": [
+    "pre-push runs once for the whole push but gets a line per ref. Pushing several branches at once means checking all of them.",
+    "A hook that takes thirty seconds trains people to use `--no-verify`. Keep it to the fast tests and leave the rest to CI.",
+    "The hook runs in the repository root regardless of where you typed the command, so relative paths in it are safe.",
+    "`$remote_sha` is all zeroes for a brand-new branch. Handle that case, or your range expression is invalid and the hook errors on first push."
+  ],
+  "cheatsheet": [
+    [".git/hooks/pre-push \"$remote\" \"$url\"", "runs before anything is sent"],
+    ["read local_ref local_sha remote_ref remote_sha", "one line per ref, on stdin"],
+    ["remote_sha = 000...0", "the branch is new on the remote"],
+    ["git log $remote_sha..$local_sha", "exactly the commits being pushed"],
+    ["exit 1", "cancel the push"],
+    ["git push --no-verify", "skip it deliberately"]
+  ]
+}

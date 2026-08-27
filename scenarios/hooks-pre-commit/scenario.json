@@ -1,0 +1,134 @@
+{
+  "id": "hooks-pre-commit",
+  "title": "Stop yourself committing a secret",
+  "category": "hooks",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 14,
+  "summary": "Write a pre-commit hook that refuses commits containing credentials or huge files. Watch it block a real commit, then learn the flag that bypasses it and why that matters.",
+  "concepts": ["pre-commit hook", "exit code blocks the commit", "diff --cached in hooks", "--no-verify", "hooks are not shared"],
+  "mental_model": "A hook is an executable in `.git/hooks` named after the event. Git runs it and reads the exit code: zero proceeds, non-zero aborts. That is the entire API.",
+  "danger": "Hooks are local and bypassable with `--no-verify`. They are a helpful guard rail, never a security control — the server must enforce anything that actually matters.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Look at what git offers you",
+      "why": "Every repository ships with sample hooks, disabled by the `.sample` suffix. Renaming one activates it — there is no registration step and no config to set.",
+      "commands": ["ls .git/hooks"],
+      "expect": "A dozen .sample files, one per hook point."
+    },
+    {
+      "title": "Write a pre-commit hook",
+      "why": "It inspects the staged content — `diff --cached`, not the working tree — and exits non-zero if it finds a credential pattern or an oversized file. Checking the staged set is the crucial detail: that is what is actually being committed.",
+      "actions": [
+        { "write": { "path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n# Refuse commits containing obvious credentials or large files.\n\nfail=0\n\nif git diff --cached -U0 | grep -nE '^\\+.*(AKIA[0-9A-Z]{8,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|password[[:space:]]*=[[:space:]]*[\"'\"'\"'][^\"'\"'\"']{6,})' >/dev/null 2>&1; then\n  echo \"pre-commit: refusing to commit what looks like a credential\" >&2\n  git diff --cached -U0 | grep -nE '^\\+.*(AKIA[0-9A-Z]{8,}|password[[:space:]]*=)' >&2\n  fail=1\nfi\n\nfor path in $(git diff --cached --name-only --diff-filter=ACM); do\n  [ -f \"$path\" ] || continue\n  size=$(wc -c < \"$path\")\n  if [ \"$size\" -gt 100000 ]; then\n    echo \"pre-commit: $path is ${size} bytes, over the 100000 limit\" >&2\n    fail=1\n  fi\ndone\n\nif [ \"$fail\" -ne 0 ]; then\n  echo \"pre-commit: commit aborted. Use --no-verify only if you are certain.\" >&2\n  exit 1\nfi\n\nexit 0\n" } },
+        { "run": "sh -c 'chmod +x .git/hooks/pre-commit'" }
+      ],
+      "commands": ["cat .git/hooks/pre-commit", "ls .git/hooks/pre-commit"],
+      "verify": [
+        { "cmd": "sh -c 'test -f .git/hooks/pre-commit && echo present'", "contains": "present",
+          "label": "the hook is installed" }
+      ]
+    },
+    {
+      "title": "Try to commit a credential",
+      "why": "The hook runs before the commit is created, prints its complaint to stderr, and exits 1. Git aborts and nothing enters history — which is the only moment a leak is cheap to fix.",
+      "actions": [
+        { "write": { "path": "config.py", "content": "AWS_KEY = 'AKIAIOSFODNN7EXAMPLE'\npassword = 'hunter2hunter2'\n" } },
+        { "run": "git add config.py" }
+      ],
+      "commands": ["git commit -m \"Add config\"", "git log --oneline", "git status --short"],
+      "expect": "The hook's message, exit code 1, and no new commit.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 1,
+          "label": "the credential commit was blocked", "hint": "the hook must exit non-zero" }
+      ]
+    },
+    {
+      "title": "Fix the actual problem",
+      "why": "Move the secret to an environment variable and the hook passes. The point of a guard rail is that the correct fix is easy and the wrong one is obstructed.",
+      "actions": [
+        { "write": { "path": "config.py", "content": "import os\n\nAWS_KEY = os.environ['AWS_KEY']\nPASSWORD = os.environ['APP_PASSWORD']\n" } },
+        { "run": "git add config.py" }
+      ],
+      "commands": ["git commit -m \"Read credentials from the environment\"", "git log --oneline"],
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2,
+          "label": "the clean version committed fine" }
+      ]
+    },
+    {
+      "title": "Now the size check",
+      "why": "The same hook rejects an oversized file. Catching this before the commit is the difference between a two-second fix and a history rewrite later.",
+      "actions": [
+        { "run": "sh -c 'head -c 200000 /dev/urandom | base64 > blob.bin'" },
+        { "run": "git add blob.bin" }
+      ],
+      "commands": ["git commit -m \"Add binary blob\"", "git log --oneline", "git status --short"],
+      "expect": "Rejected for size.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2, "label": "the oversized file was blocked too" }
+      ]
+    },
+    {
+      "title": "The bypass, and what it means",
+      "why": "`--no-verify` skips client-side hooks entirely. Sometimes legitimate — a hook is wrong, or you are mid-emergency — but it also means a hook can never be your only defence against anything serious.",
+      "commands": ["git commit --no-verify -m \"Add binary blob (bypassing the hook)\"", "git log --oneline", "git reset --hard HEAD~1", "sh -c 'rm -f blob.bin'", "git log --oneline"],
+      "expect": "The commit succeeds despite the hook, then is undone.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2,
+          "label": "the bypassed commit was rolled back afterwards" }
+      ]
+    },
+    {
+      "title": "Make it survive a fresh clone",
+      "why": "`.git/hooks` is not committed and never clones. Keep hooks in a tracked directory and point `core.hooksPath` at it — one config line per clone, and the hooks themselves are reviewed like any other code.",
+      "actions": [
+        { "run": "sh -c 'mkdir -p .githooks && cp .git/hooks/pre-commit .githooks/pre-commit && chmod +x .githooks/pre-commit'" },
+        { "run": "git add .githooks" },
+        { "run": "git commit -q -m \"Track the pre-commit hook in the repository\"" },
+        { "run": "git config core.hooksPath .githooks" }
+      ],
+      "commands": ["git config --get core.hooksPath", "ls .githooks", "git log --oneline"],
+      "verify": [
+        { "cmd": "git config --get core.hooksPath", "equals": ".githooks",
+          "label": "hooks now come from a tracked directory",
+          "hint": "git config core.hooksPath .githooks" },
+        { "cmd": "git ls-files", "contains": ".githooks/pre-commit",
+          "label": "…and the hook itself is committed" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "contains": ".githooks/pre-commit",
+      "label": "the hook is tracked so the team can share it",
+      "hint": "copy it into .githooks, commit, and set core.hooksPath" },
+    { "cmd": "git config --get core.hooksPath", "equals": ".githooks",
+      "label": "core.hooksPath points at the tracked directory" },
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "only the legitimate commits made it into history",
+      "hint": "the credential and oversized-file commits should have been blocked" },
+    { "cmd": "git show HEAD~1:config.py", "not_contains": "AKIA",
+      "label": "no credential ever reached a commit" },
+    { "cmd": "git ls-files", "not_contains": "blob.bin",
+      "label": "and no oversized binary either" }
+  ],
+  "pitfalls": [
+    "Check `git diff --cached`, not the working tree. A hook that scans working-tree files misses partially staged changes and flags things you never staged.",
+    "`--no-verify` bypasses every client-side hook. Anything that must not happen needs a server-side check as well.",
+    "Hooks must be executable. On Unix a missing +x makes git skip the hook silently — no error, no protection.",
+    "A slow pre-commit hook trains people to use `--no-verify` habitually. Keep it under a second, and put the heavy checks in pre-push or CI."
+  ],
+  "cheatsheet": [
+    ["ls .git/hooks", "the available hook points"],
+    [".git/hooks/pre-commit", "runs before a commit is created"],
+    ["exit 1", "aborts the operation"],
+    ["git diff --cached --name-only", "what is actually being committed"],
+    ["git commit --no-verify", "skip client-side hooks"],
+    ["git config core.hooksPath .githooks", "use a tracked hooks directory"]
+  ]
+}
