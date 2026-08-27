@@ -1,0 +1,140 @@
+{
+  "id": "incidents-huge-file-blocks-push",
+  "title": "The server rejects your push: file exceeds the size limit",
+  "category": "incidents",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 16,
+  "summary": "A dataset was committed four commits ago and the server refuses the whole branch. Deleting it now does not help — you must remove it from the commit that added it, then push.",
+  "concepts": ["server size limits", "rewriting an unpushed branch", "rebase -i edit", "filter-branch on a branch", "gitignore prevention"],
+  "mental_model": "The server validates every object in the push, not just the final tree. A large blob in any commit of the branch fails the whole push, so the fix must remove it from that commit — not add a later one that deletes the file.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "cwd": "origin", "write": { "path": "hooks/pre-receive", "content": "#!/bin/sh\n# Reject any push containing a blob over the size limit.\nLIMIT=120000\nZERO=0000000000000000000000000000000000000000\nstatus=0\n\nwhile read old new ref; do\n  [ \"$new\" = \"$ZERO\" ] && continue\n  if [ \"$old\" = \"$ZERO\" ]; then\n    range=\"$new\"\n  else\n    range=\"$old..$new\"\n  fi\n  for sha in $(git rev-list --objects $range 2>/dev/null | cut -d' ' -f1); do\n    type=$(git cat-file -t \"$sha\" 2>/dev/null) || continue\n    [ \"$type\" = \"blob\" ] || continue\n    size=$(git cat-file -s \"$sha\" 2>/dev/null || echo 0)\n    if [ \"$size\" -gt \"$LIMIT\" ]; then\n      name=$(git rev-list --objects $range | grep \"^$sha\" | cut -d' ' -f2-)\n      echo \"pre-receive: $name is $size bytes, over the $LIMIT limit\" >&2\n      status=1\n    fi\n  done\ndone\n\n[ \"$status\" -ne 0 ] && echo \"pre-receive: push rejected. Remove the file from history, not just from the tip.\" >&2\nexit $status\n" } },
+    { "cwd": "origin", "run": "sh -c 'chmod +x hooks/pre-receive'" },
+    { "run": "git switch -q -c feature/import" },
+    { "write": { "path": "importer.py", "content": "def load(path):\n    return open(path).read()\n" } },
+    { "commit": { "message": "Add the importer" } },
+    { "run": "sh -c 'head -c 200000 /dev/urandom | base64 > sample-data.csv'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add the sample dataset for testing\"" },
+    { "write": { "path": "importer.py", "content": "def load(path):\n    with open(path) as handle:\n        return handle.read()\n" } },
+    { "commit": { "message": "Use a context manager in the importer" } },
+    { "write": { "path": "test_importer.py", "content": "def test_load():\n    assert True\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add importer tests\"" }
+  ],
+  "steps": [
+    {
+      "title": "Watch the push get rejected",
+      "why": "The server checks every object in the push, so the branch fails as a whole. Read the message: it names the file and the commit range, which is everything you need.",
+      "commands": ["git push origin feature/import", "git log --oneline main..HEAD"],
+      "expect": "remote: pre-receive: sample-data.csv is 2xxxxx bytes, over the limit.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": "feature/import",
+          "label": "the branch was rejected by the server" }
+      ]
+    },
+    {
+      "title": "Try the fix everyone tries first",
+      "why": "Deleting the file and committing does not help: the blob is still in the commit that added it, and the push still contains that commit. This is the key misunderstanding the whole scenario exists to correct.",
+      "actions": [
+        { "run": "git rm -q sample-data.csv" },
+        { "run": "git commit -q -m \"Remove the sample dataset\"" }
+      ],
+      "commands": ["ls", "git push origin feature/import"],
+      "expect": "Rejected again, for the same object.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": "feature/import",
+          "label": "deleting at the tip did not help",
+          "hint": "the blob is still inside an earlier commit in the push" }
+      ]
+    },
+    {
+      "title": "Find which commit introduced it",
+      "why": "`--diff-filter=A` names the commit that added the file. That is the commit that must be rewritten — nothing else will do.",
+      "commands": ["git log --oneline --diff-filter=A -- sample-data.csv", "sh -c 'git rev-list --objects main..HEAD | grep sample-data'"],
+      "expect": "One commit, and the blob still reachable from the branch."
+    },
+    {
+      "title": "Remove it from every commit on the branch",
+      "why": "`filter-branch` limited to `main..HEAD` rewrites only your unpushed commits — the shared history on main is untouched, which is what makes this rewrite safe to do unilaterally.",
+      "actions": [
+        { "run": "sh -c 'git reset -q --hard HEAD~1'" },
+        { "run": "git filter-branch --force --index-filter \"git rm --cached --ignore-unmatch sample-data.csv\" --prune-empty main..HEAD",
+          "env": { "FILTER_BRANCH_SQUELCH_WARNING": "1" } }
+      ],
+      "commands": ["git log --oneline main..HEAD", "sh -c 'git log --oneline --all -- sample-data.csv | wc -l'", "ls"],
+      "expect": "Three commits, none of them containing the dataset.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --objects main..HEAD | grep sample-data | wc -l'", "equals": "0",
+          "label": "no commit on the branch carries the dataset any more",
+          "hint": "git filter-branch --index-filter with a main..HEAD range" }
+      ]
+    },
+    {
+      "title": "Prevent it happening again in the same branch",
+      "why": "Ignore the path before pushing, so a colleague regenerating the dataset does not repeat the incident. Fixing the history without fixing the cause guarantees a second occurrence.",
+      "actions": [
+        { "write": { "path": ".gitignore", "content": "# Generated test data — regenerate locally, never commit.\nsample-data.csv\n*.csv\n" } },
+        { "run": "git add .gitignore" },
+        { "run": "git commit -q -m \"Ignore generated datasets\"" }
+      ],
+      "commands": ["cat .gitignore", "git status --short", "git log --oneline main..HEAD"]
+    },
+    {
+      "title": "Push successfully",
+      "why": "Every object in the push is now under the limit, so the hook passes. Note the branch's commits all have new shas — acceptable precisely because nobody had ever received them.",
+      "commands": ["git push origin feature/import", "git branch -r", "git log --oneline --graph --all --decorate -6"],
+      "verify": [
+        { "cmd": "git branch -r", "contains": "feature/import",
+          "label": "the cleaned branch pushed successfully",
+          "hint": "remove the blob from the commit that added it, then push" }
+      ]
+    },
+    {
+      "title": "Confirm what the server received",
+      "why": "Read the branch from the bare repository: the importer and its tests are there, the dataset is not, and no giant object was ever transferred.",
+      "cwd": "origin",
+      "commands": ["git log --oneline feature/import", "git ls-tree -r feature/import --name-only", "sh -c 'git rev-list --objects feature/import | grep -c sample-data || echo 0'"],
+      "expect": "Clean tree on the server, no dataset anywhere.",
+      "verify": [
+        { "cmd": "git ls-tree -r feature/import --name-only", "cwd": "origin",
+          "not_contains": "sample-data.csv",
+          "label": "the server's copy has no trace of the dataset" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git branch -r", "contains": "feature/import",
+      "label": "the branch is published",
+      "hint": "rewrite the offending commit, then push" },
+    { "cmd": "git ls-tree -r feature/import --name-only", "cwd": "origin",
+      "contains": ["importer.py", "test_importer.py"],
+      "label": "the real work reached the server" },
+    { "cmd": "sh -c 'git rev-list --objects feature/import | grep sample-data | wc -l'", "cwd": "origin",
+      "equals": "0",
+      "label": "…and the oversized blob never did" },
+    { "cmd": "git ls-files", "contains": ".gitignore",
+      "label": "the cause was fixed as well as the symptom" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "A later commit that deletes the file does not help. The push contains every commit, and the server validates every object in it.",
+    "Rewriting is safe here only because the branch was never accepted by the server. If it had been pushed and pulled, coordinate first.",
+    "GitHub's hard limit is 100MB per file, with warnings above 50MB, and it applies to any object in the push — not just the tip.",
+    "The real fix is a pre-commit size check plus .gitignore. By the time the server rejects it, you are already doing history surgery.",
+    "If the dataset is genuinely needed, Git LFS or an artefact store is the answer — not a bigger limit."
+  ],
+  "cheatsheet": [
+    ["git log --diff-filter=A -- <path>", "which commit added the file"],
+    ["git rev-list --objects <range>", "every object a push would contain"],
+    ["git cat-file -s <sha>", "an object's size"],
+    ["git filter-branch --index-filter 'git rm --cached --ignore-unmatch <path>' <range>", "purge it from a branch"],
+    ["git rebase -i <base>", "the alternative for a single recent commit"],
+    ["git count-objects -vH", "confirm the branch shrank"]
+  ]
+}

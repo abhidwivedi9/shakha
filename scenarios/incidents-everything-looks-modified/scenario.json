@@ -1,0 +1,147 @@
+{
+  "id": "incidents-everything-looks-modified",
+  "title": "git status says every file changed and you touched nothing",
+  "category": "incidents",
+  "level": "intermediate",
+  "order": 6,
+  "duration_min": 14,
+  "summary": "Four hundred files modified, an empty diff, and a colleague who cannot reproduce it. Work through the three real causes — file modes, line endings, and assume-unchanged — and fix each one.",
+  "concepts": ["core.fileMode", "executable bit", "CRLF", "diff -w", "assume-unchanged", "update-index --refresh"],
+  "mental_model": "Git compares the index against the working tree using content, mode and timestamp. A mass 'modified' with no visible diff means one of the non-content fields changed, or the index's cached stat information is stale.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "src/app.py", "content": "print('reef')\n" } },
+    { "write": { "path": "src/pump.py", "content": "RPM = 1600\n" } },
+    { "write": { "path": "scripts/deploy.sh", "content": "#!/bin/sh\necho deploying\n" } },
+    { "write": { "path": "scripts/backup.sh", "content": "#!/bin/sh\necho backing up\n" } },
+    { "write": { "path": "config.ini", "content": "[tank]\nname = reef-01\ntemp = 26.0\n" } },
+    { "run": "git add -A" },
+    { "run": "sh -c 'git update-index --chmod=+x scripts/deploy.sh scripts/backup.sh'" },
+    { "run": "git commit -q -m \"Add the project\"" }
+  ],
+  "steps": [
+    {
+      "title": "Cause one: the executable bit",
+      "why": "Copying files through a Windows share, a zip, or some Docker mounts loses the executable bit. Git tracks that bit as part of the index entry, so the file counts as modified with no content change at all. Here we change it directly in the index with --chmod, which behaves identically on every platform (on Windows, core.fileMode defaults to false, so a real chmod would show nothing).",
+      "actions": [
+        { "run": "sh -c 'git update-index --chmod=-x scripts/deploy.sh scripts/backup.sh'" }
+      ],
+      "commands": ["git status --short", "git diff --cached", "git diff --cached --summary", "git ls-files -s scripts"],
+      "expect": "Two files modified, an empty content diff, and `--summary` showing the mode change 100755 => 100644.",
+      "verify": [
+        { "cmd": "git diff --cached --summary", "contains": "mode change",
+          "label": "the modification is a mode change, not content" },
+        { "cmd": "git diff --cached --numstat", "empty": true,
+          "label": "…and not a single line of content changed",
+          "hint": "the diff header shows old mode / new mode and nothing else" }
+      ]
+    },
+    {
+      "title": "Fix it properly, or ignore it",
+      "why": "Restoring the bit is the correct fix. `core.fileMode false` tells git to stop tracking the bit at all — right on Windows, wrong on a Unix machine where a lost bit really does break the deploy.",
+      "commands": ["sh -c 'git update-index --chmod=+x scripts/deploy.sh scripts/backup.sh'", "git status --short", "git ls-files -s scripts", "sh -c 'git config core.fileMode || echo \"core.fileMode not set (defaults to false on Windows)\"'"],
+      "expect": "Clean again, with the bit restored rather than the check disabled.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true,
+          "label": "the mode change is resolved",
+          "hint": "chmod +x the scripts, or set core.fileMode false if you are on Windows" }
+      ]
+    },
+    {
+      "title": "Cause two: line endings",
+      "why": "An editor saved every file with CRLF. Every line differs at the byte level, so every file is modified — and `git diff` shows entire files rewritten, which looks like catastrophe.",
+      "actions": [
+        { "run": "sh -c 'for f in src/app.py src/pump.py config.ini; do sed -i \"s/$/\\r/\" \"$f\"; done'" }
+      ],
+      "commands": ["git status --short", "git diff --stat", "git diff --stat --ignore-cr-at-eol", "git ls-files --eol"],
+      "expect": "Three files modified; ignoring carriage returns shows zero real changes.",
+      "verify": [
+        { "cmd": "git status --porcelain", "not_empty": true,
+          "label": "line endings alone made every file look modified" }
+      ]
+    },
+    {
+      "title": "Prove it is only line endings, then fix it at the repo level",
+      "why": "`--ignore-cr-at-eol` proving an empty diff is the diagnosis. `.gitattributes` with `text=auto` plus a renormalise is the cure, and it binds everyone rather than only your machine.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "* text=auto\n*.sh text eol=lf\n" } },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Normalise line endings\"" },
+        { "run": "sh -c 'git add --renormalize . && git commit -q -m \"Renormalise\" --allow-empty'" },
+        { "run": "sh -c 'git checkout -- . 2>/dev/null; true'" }
+      ],
+      "commands": ["git status --short", "git ls-files --eol", "git diff --stat"],
+      "expect": "Clean tree, and the index storing LF regardless of what the editor writes.",
+      "verify": [
+        { "cmd": "git ls-files --eol config.ini", "contains": "i/lf",
+          "label": "the repository stores LF, so editor choice no longer matters",
+          "hint": "* text=auto in .gitattributes, then git add --renormalize ." }
+      ]
+    },
+    {
+      "title": "Cause three: a file that refuses to update",
+      "why": "The opposite symptom, same family. `assume-unchanged` tells git to stop checking a file — usually set years ago to ignore local config edits. The file then never appears modified, and your changes silently never get committed.",
+      "actions": [
+        { "run": "sh -c 'git update-index --assume-unchanged config.ini'" },
+        { "write": { "path": "config.ini", "content": "[tank]\nname = reef-01\ntemp = 31.5\n" } }
+      ],
+      "commands": ["git status --short", "git diff", "sh -c 'git ls-files -v | grep \"^[a-z]\"'"],
+      "expect": "Status is clean despite a real edit, and ls-files -v shows a lowercase flag marking the file.",
+      "verify": [
+        { "cmd": "sh -c 'git ls-files -v | grep \"^h\" | wc -l'", "equals": "1",
+          "label": "one file is marked assume-unchanged and invisible to status" }
+      ]
+    },
+    {
+      "title": "Undo it and commit the change that was being swallowed",
+      "why": "`--no-assume-unchanged` restores normal behaviour and the edit reappears immediately. This flag has cost more people more hours than almost anything else in git.",
+      "commands": ["sh -c 'git update-index --no-assume-unchanged config.ini'", "git status --short", "git diff", "git add config.ini", "git commit -q -m \"Raise the tank temperature threshold\"", "sh -c 'git ls-files -v | grep \"^[a-z]\" | wc -l'"],
+      "verify": [
+        { "cmd": "sh -c 'git ls-files -v | grep \"^[a-z]\" | wc -l'", "equals": "0",
+          "label": "no file is hidden from status any more",
+          "hint": "git update-index --no-assume-unchanged <file>" },
+        { "cmd": "git show HEAD:config.ini", "contains": "31.5",
+          "label": "the previously swallowed edit is committed" }
+      ]
+    },
+    {
+      "title": "The harmless fourth cause",
+      "why": "Sometimes the index's cached stat data is simply stale — after restoring a backup, or a clock jump. `update-index --refresh` re-checks content and quietly drops files whose content is unchanged.",
+      "commands": ["sh -c 'touch src/app.py src/pump.py'", "git status --short", "sh -c 'git update-index --refresh'", "git status --short"],
+      "expect": "Nothing modified: touching a file changes its timestamp, and git falls back to comparing content.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the tree is genuinely clean" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "the working tree is clean and honest again",
+      "hint": "fix the mode bits, normalise line endings, clear assume-unchanged" },
+    { "cmd": "git ls-files --eol config.ini", "contains": "i/lf",
+      "label": "line endings are normalised in the repository" },
+    { "cmd": "sh -c 'git ls-files -v | grep \"^[a-z]\" | wc -l'", "equals": "0",
+      "label": "no file is hidden by assume-unchanged" },
+    { "cmd": "git show HEAD:config.ini", "contains": "31.5",
+      "label": "the edit that was being swallowed is committed" },
+    { "cmd": "git ls-files -s scripts/deploy.sh", "contains": "100755",
+      "label": "the executable bit is intact in the index" }
+  ],
+  "pitfalls": [
+    "`git diff --summary` reveals mode changes that `git diff` hides. It is the first thing to run when status and diff disagree.",
+    "`core.fileMode false` is right on Windows and dangerous on Unix — it stops git noticing a script that lost its executable bit.",
+    "`--assume-unchanged` is a performance hint, not an ignore mechanism. Git may still notice the file, and your changes may vanish. Use a separate untracked config file instead.",
+    "`--skip-worktree` is the slightly safer sibling, and is what sparse-checkout uses. Both hide files from status.",
+    "`git ls-files -v` prints a lowercase letter for any file flagged this way. Run it whenever a file mysteriously refuses to change."
+  ],
+  "cheatsheet": [
+    ["git diff --summary", "mode changes, renames, new and deleted files"],
+    ["git ls-files -s", "the mode git has recorded"],
+    ["git diff --ignore-cr-at-eol", "prove a diff is only line endings"],
+    ["git ls-files --eol", "index and working-tree line endings"],
+    ["git add --renormalize .", "restage everything through .gitattributes"],
+    ["git ls-files -v | grep '^[a-z]'", "files hidden by assume-unchanged or skip-worktree"],
+    ["git update-index --no-assume-unchanged <file>", "make git watch it again"],
+    ["git update-index --refresh", "drop stale stat data from the index"]
+  ]
+}

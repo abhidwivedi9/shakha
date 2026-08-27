@@ -1,0 +1,129 @@
+{
+  "id": "incidents-lockfile-conflict",
+  "title": "A 4,000-line lockfile conflict",
+  "category": "incidents",
+  "level": "intermediate",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "Two branches added dependencies and the lockfile conflicts everywhere. Never hand-merge one — regenerate it. Learn the pattern, and the .gitattributes rule that stops the conflict recurring.",
+  "concepts": ["generated files in git", "regenerate rather than merge", "merge driver", "union merge", "checkout --theirs"],
+  "mental_model": "A lockfile is generated output, not source. Merging two generated files line by line produces something neither tool would ever produce. The correct resolution is always: take one side, then re-run the generator.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "requirements.in", "content": "flask\n" } },
+    { "write": { "path": "requirements.lock", "content": "# generated from requirements.in — do not edit\nblinker==1.7.0\nclick==8.1.7\nflask==3.0.0\nitsdangerous==2.1.2\njinja2==3.1.3\nmarkupsafe==2.1.5\nwerkzeug==3.0.1\n" } },
+    { "write": { "path": "regenerate.sh", "content": "#!/bin/sh\n# Stand-in for pip-compile / npm install / bundle lock.\n{\n  echo '# generated from requirements.in — do not edit'\n  {\n    while read -r pkg; do\n      [ -n \"$pkg\" ] || continue\n      case \"$pkg\" in\n        flask) printf 'blinker==1.7.0\\nclick==8.1.7\\nflask==3.0.0\\nitsdangerous==2.1.2\\njinja2==3.1.3\\nmarkupsafe==2.1.5\\nwerkzeug==3.0.1\\n' ;;\n        redis) printf 'redis==5.0.1\\n' ;;\n        celery) printf 'amqp==5.2.0\\nbilliard==4.2.0\\ncelery==5.3.6\\nkombu==5.3.5\\nvine==5.1.0\\n' ;;\n        *) printf '%s==0.0.0\\n' \"$pkg\" ;;\n      esac\n    done < requirements.in\n  } | sort -u\n} > requirements.lock\necho \"regenerated requirements.lock\"\n" } },
+    { "run": "sh -c 'chmod +x regenerate.sh'" },
+    { "commit": { "message": "Add dependencies and lockfile" } },
+    { "run": "git switch -q -c feature/cache" },
+    { "write": { "path": "requirements.in", "content": "flask\nredis\n" } },
+    { "run": "sh -c './regenerate.sh >/dev/null'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add redis for caching\"" },
+    { "run": "git switch -q main" },
+    { "write": { "path": "requirements.in", "content": "celery\nflask\n" } },
+    { "run": "sh -c './regenerate.sh >/dev/null'" },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add celery for background jobs\"" }
+  ],
+  "steps": [
+    {
+      "title": "Look at what each branch did",
+      "why": "Both edited one line of requirements.in and both regenerated the lockfile, which rewrote large parts of it. The source change is tiny; the generated change is not.",
+      "commands": ["cat requirements.in", "cat requirements.lock", "git diff main feature/cache -- requirements.in", "git diff --stat main feature/cache"]
+    },
+    {
+      "title": "Merge and get two very different conflicts",
+      "why": "requirements.in conflicts on one line and is trivially resolvable. requirements.lock conflicts across the file — and no amount of careful reading will produce a correct answer, because the correct answer is whatever the generator would output.",
+      "commands": ["git merge feature/cache", "git status --short", "sh -c 'grep -c \"<<<<<<<\" requirements.lock'", "cat requirements.lock"],
+      "expect": "Both files conflicted, the lockfile heavily.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "requirements.lock",
+          "label": "the lockfile is conflicted" }
+      ]
+    },
+    {
+      "title": "Resolve the SOURCE file properly",
+      "why": "requirements.in is hand-written source and deserves a real resolution: both dependencies belong. Always fix the source first — the generated file follows from it.",
+      "actions": [
+        { "write": { "path": "requirements.in", "content": "celery\nflask\nredis\n" } },
+        { "run": "git add requirements.in" }
+      ],
+      "commands": ["cat requirements.in", "git status --short"],
+      "verify": [
+        { "cmd": "cat requirements.in", "contains": ["celery", "flask", "redis"],
+          "label": "the source file has both branches' dependencies" }
+      ]
+    },
+    {
+      "title": "Do NOT resolve the lockfile by hand",
+      "why": "Take either side wholesale — it does not matter which, because you are about to overwrite it. `checkout --ours` just gets the conflict markers out of the way.",
+      "commands": ["git checkout --ours requirements.lock", "sh -c 'grep -c \"<<<<<<<\" requirements.lock || echo 0'", "cat requirements.lock"],
+      "expect": "A valid lockfile with no markers — and the wrong contents, which is fine."
+    },
+    {
+      "title": "Regenerate it from the resolved source",
+      "why": "The generator is the only thing that can produce a correct lockfile. This one command is the entire correct resolution, and it is the same in every ecosystem: `npm install`, `pip-compile`, `bundle lock`, `cargo update`.",
+      "commands": ["sh -c './regenerate.sh'", "cat requirements.lock", "git add requirements.lock", "git status --short"],
+      "expect": "A lockfile containing flask, redis AND celery — which neither branch had.",
+      "verify": [
+        { "cmd": "cat requirements.lock", "contains": ["flask==3.0.0", "redis==5.0.1", "celery==5.3.6"],
+          "label": "the regenerated lockfile has every dependency",
+          "hint": "resolve requirements.in, then re-run the generator" },
+        { "cmd": "cat requirements.lock", "not_contains": ["<<<<<<<", ">>>>>>>"],
+          "label": "…and no conflict markers" }
+      ]
+    },
+    {
+      "title": "Commit the merge",
+      "why": "One merge commit containing a correctly resolved source file and a correctly generated lockfile. Anyone reviewing it sees a coherent result rather than an invented one.",
+      "commands": ["git commit --no-edit", "git log --oneline --graph -4", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the merge is committed" }
+      ]
+    },
+    {
+      "title": "Make the next one quieter",
+      "why": "Marking generated files in `.gitattributes` documents the rule for humans and can hand git a merge driver. Some teams go further and stop tracking lockfiles in libraries — but for applications you want the lockfile committed, so this is the pragmatic middle.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "# Generated: never hand-merge. Take one side and re-run ./regenerate.sh\nrequirements.lock merge=ours linguist-generated=true\npackage-lock.json merge=ours linguist-generated=true\n" } },
+        { "run": "git config merge.ours.driver true" },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Mark lockfiles as generated for merges\"" }
+      ],
+      "commands": ["cat .gitattributes", "git check-attr merge -- requirements.lock", "git config --get merge.ours.driver"],
+      "expect": "check-attr reports merge: ours for the lockfile.",
+      "verify": [
+        { "cmd": "git check-attr merge -- requirements.lock", "contains": "ours",
+          "label": "the lockfile has a merge driver so it stops conflicting",
+          "hint": "requirements.lock merge=ours in .gitattributes, plus merge.ours.driver=true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat requirements.lock", "contains": ["flask==3.0.0", "redis==5.0.1", "celery==5.3.6"],
+      "label": "the lockfile contains every dependency from both branches",
+      "hint": "regenerate it — do not merge it line by line" },
+    { "cmd": "cat requirements.lock", "not_contains": ["<<<<<<<", "======="],
+      "label": "no conflict markers survived" },
+    { "cmd": "cat requirements.in", "lines": 3,
+      "label": "the source file was resolved by hand, correctly" },
+    { "cmd": "git check-attr merge -- requirements.lock", "contains": "ours",
+      "label": "a merge driver is configured so the next conflict is automatic" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Never resolve a lockfile by hand. The result is a file the package manager would never generate, and it fails at install time on someone else's machine.",
+    "`merge=ours` needs a driver defined too (`git config merge.ours.driver true`), and that config is per-clone. Document it in your contributing guide.",
+    "Taking 'ours' silently drops the other branch's dependency until you regenerate. The regeneration step is not optional.",
+    "Some teams stop committing lockfiles to avoid this. For an application that is a mistake — the lockfile is what makes builds reproducible."
+  ],
+  "cheatsheet": [
+    ["git checkout --ours <lockfile>", "clear the markers, contents do not matter"],
+    ["<regenerate command>", "the actual resolution: npm install, pip-compile, bundle lock"],
+    ["git add <lockfile>", "mark it resolved"],
+    ["git check-attr merge -- <path>", "which merge driver applies"],
+    ["merge=ours in .gitattributes", "stop it conflicting at all"],
+    ["git config merge.ours.driver true", "define the driver the attribute names"]
+  ]
+}

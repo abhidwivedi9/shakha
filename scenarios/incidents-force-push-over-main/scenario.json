@@ -1,0 +1,146 @@
+{
+  "id": "incidents-force-push-over-main",
+  "title": "Someone force-pushed over main and deleted a day of commits",
+  "category": "incidents",
+  "level": "expert",
+  "order": 3,
+  "duration_min": 16,
+  "summary": "Six commits vanished from the shared main. Find them in a colleague's clone, restore the branch on the server, and install the protection that makes it impossible next time.",
+  "concepts": ["force push damage", "recovering from another clone", "remote-tracking reflog", "restoring a server branch", "branch protection"],
+  "mental_model": "A force push replaces the server's ref. The commits are not deleted from the server's object database immediately, and every clone that fetched them still has them — so recovery is about finding any copy and pushing it back.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "write": { "path": "payments.py", "content": "def charge(amount):\n    return amount\n" } },
+    { "commit": { "message": "Add payment charging" } },
+    { "write": { "path": "payments.py", "content": "def charge(amount):\n    if amount <= 0:\n        raise ValueError('positive only')\n    return amount\n" } },
+    { "commit": { "message": "Validate charge amounts" } },
+    { "write": { "path": "refunds.py", "content": "def refund(amount):\n    return -amount\n" } },
+    { "commit": { "message": "Add refunds" } },
+    { "write": { "path": "audit.py", "content": "def record(event):\n    print(event)\n" } },
+    { "commit": { "message": "Add the audit log" } },
+    { "run": "git push -q origin main" },
+    { "clone_teammate": true },
+    { "run": "git reset -q --hard HEAD~4" },
+    { "write": { "path": "wrong.py", "content": "OOPS = True\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Local experiment that should never have been pushed\"" },
+    { "run": "git push -q --force origin main" }
+  ],
+  "steps": [
+    {
+      "title": "Assess the damage on the server",
+      "why": "The bare repository is the source of truth for the team, and four commits of work are simply not in it any more. Establish the scope before touching anything.",
+      "cwd": "origin",
+      "commands": ["git log --oneline main", "git ls-tree -r main --name-only"],
+      "expect": "Two commits, and no payments, refunds or audit files.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 2,
+          "label": "the server lost four commits" }
+      ]
+    },
+    {
+      "title": "Find a clone that still has them",
+      "why": "Anyone who fetched before the force push still holds the commits and, crucially, a remote-tracking reflog recording where origin/main used to point. That reflog is the recovery key.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline origin/main", "git fetch origin", "git log --oneline origin/main", "git reflog show origin/main"],
+      "expect": "After fetching, origin/main moves back — but the reflog still records the old sha.",
+      "verify": [
+        { "cmd": "git reflog show origin/main", "cwd": "teammate", "not_empty": true,
+          "label": "the colleague's remote-tracking reflog has the pre-force position" }
+      ]
+    },
+    {
+      "title": "Confirm the old commits are intact in that clone",
+      "why": "`origin/main@{1}` names where the ref pointed one move ago. Everything is there — the force push removed a pointer, not the objects in this clone.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline origin/main@{1}", "sh -c 'git show origin/main@{1}:payments.py'", "sh -c 'git log --oneline origin/main@{1} | wc -l'"],
+      "expect": "Six commits, and the payment code readable.",
+      "verify": [
+        { "cmd": "sh -c 'git show origin/main@{1}:payments.py'", "cwd": "teammate",
+          "contains": "positive only",
+          "label": "the lost work is fully present in the colleague's clone" }
+      ]
+    },
+    {
+      "title": "Rescue them onto a branch first",
+      "why": "Name them before doing anything else. A branch makes the commits reachable and safe from garbage collection while you decide how to restore them.",
+      "cwd": "teammate",
+      "commands": ["sh -c 'git branch rescue/main-before-force origin/main@{1}'", "git log --oneline rescue/main-before-force", "git branch -a"],
+      "verify": [
+        { "cmd": "git log --oneline rescue/main-before-force", "cwd": "teammate", "lines": 5,
+          "label": "the lost history has a name again",
+          "hint": "git branch rescue/... origin/main@{1}" }
+      ]
+    },
+    {
+      "title": "Decide what main should be",
+      "why": "The rescued history plus the one commit that was force-pushed on top. Rather than discarding anyone's work, rebase the stray commit onto the restored line — the honest outcome for a shared branch.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline origin/main", "git log --oneline rescue/main-before-force", "git log --oneline --graph --all --decorate -10"],
+      "expect": "Two histories: five rescued commits, and two containing the stray experiment."
+    },
+    {
+      "title": "Rebuild main and push it back",
+      "why": "Replay the stray commit onto the rescued tip, then force-push once, deliberately, having looked at exactly what you are replacing. This is the only force push in the incident that anyone should make.",
+      "actions": [
+        { "cwd": "teammate", "run": "git switch -q -c restore/main rescue/main-before-force" },
+        { "cwd": "teammate", "run": "sh -c 'git cherry-pick $(git log -1 --format=%H --grep=\"Local experiment\" origin/main)'" },
+        { "cwd": "teammate", "run": "git push -q --force origin restore/main:main" }
+      ],
+      "cwd": "teammate",
+      "commands": ["git log --oneline restore/main", "git fetch origin", "git log --oneline origin/main"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 6,
+          "label": "the server has the restored history plus the stray commit",
+          "hint": "cherry-pick the stray commit onto the rescued tip, then push --force once" }
+      ]
+    },
+    {
+      "title": "Install the protection",
+      "why": "The incident was possible because the server accepted a non-fast-forward push to main. A pre-receive hook — or branch protection on a forge — turns this from an incident into an error message.",
+      "actions": [
+        { "cwd": "origin", "write": { "path": "hooks/pre-receive", "content": "#!/bin/sh\n# Refuse non-fast-forward pushes and deletions on main.\nZERO=0000000000000000000000000000000000000000\nstatus=0\n\nwhile read old new ref; do\n  [ \"$ref\" = \"refs/heads/main\" ] || continue\n  if [ \"$new\" = \"$ZERO\" ]; then\n    echo \"pre-receive: refusing to delete main\" >&2\n    status=1\n  elif [ \"$old\" != \"$ZERO\" ] && ! git merge-base --is-ancestor \"$old\" \"$new\"; then\n    echo \"pre-receive: refusing force push to main\" >&2\n    status=1\n  fi\ndone\nexit $status\n" } },
+        { "cwd": "origin", "run": "sh -c 'chmod +x hooks/pre-receive'" }
+      ],
+      "cwd": "teammate",
+      "commands": ["git reset -q --hard HEAD~1", "git push --force origin restore/main:main", "git log --oneline origin/main"],
+      "expect": "The next force push is rejected — the hole is closed.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 6,
+          "label": "the protection held: main was not rewound again",
+          "hint": "a pre-receive hook comparing old and new with merge-base --is-ancestor" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 6,
+      "label": "the server's main has the recovered history",
+      "hint": "rescue from a colleague's origin/main@{1}, then push it back" },
+    { "cmd": "git show main:payments.py", "cwd": "origin", "contains": "positive only",
+      "label": "the lost payment code is back on the server" },
+    { "cmd": "git ls-tree -r main --name-only", "cwd": "origin",
+      "contains": ["refunds.py", "audit.py"],
+      "label": "every deleted file was restored" },
+    { "cmd": "sh -c 'test -x hooks/pre-receive && echo protected'", "cwd": "origin",
+      "contains": "protected",
+      "label": "branch protection is now installed" }
+  ],
+  "pitfalls": [
+    "Act before the reflogs expire and before anyone runs `gc --prune=now` on the server. Recovery windows are days, not months.",
+    "`origin/main@{1}` exists only in clones that had fetched the good state. Ask the whole team before concluding the commits are gone.",
+    "Do not let people 'fix' it by re-pushing their own stale main — that compounds the damage with a second force push.",
+    "The server's own reflog (`core.logAllRefUpdates` on a bare repo) can also hold the old tip, but it is off by default for bare repositories.",
+    "The permanent fix is server-side. Asking people to be careful with `--force` has never worked anywhere."
+  ],
+  "cheatsheet": [
+    ["git reflog show origin/main", "where the remote ref pointed before"],
+    ["git log --oneline origin/main@{1}", "the pre-force history"],
+    ["git branch rescue/x origin/main@{1}", "name it before anything else"],
+    ["git push --force origin <local>:main", "restore the server's branch"],
+    ["git merge-base --is-ancestor <old> <new>", "the force-push test a hook uses"],
+    ["git cherry-pick <sha>", "keep the stray commit rather than discarding it"]
+  ]
+}

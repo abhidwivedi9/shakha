@@ -1,0 +1,117 @@
+{
+  "id": "incidents-merge-ate-my-changes",
+  "title": "\"The merge deleted my code\" — find out what really happened",
+  "category": "incidents",
+  "level": "advanced",
+  "order": 1,
+  "duration_min": 16,
+  "summary": "A function that existed last week is gone, and the blame points at a merge commit. Learn to diff a merge against each parent, prove where the code was dropped, and restore it.",
+  "concepts": ["diff a merge against each parent", "log -S through merges", "--diff-merges", "bad conflict resolution", "restoring from a parent"],
+  "mental_model": "A merge commit has two parents and therefore two diffs. Code lost in a bad resolution shows up as removed against one parent and absent against the other — comparing both is how you prove it, and blame cannot.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "billing.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n" } },
+    { "commit": { "message": "Add billing" } },
+    { "run": "git switch -q -c feature/discounts" },
+    { "write": { "path": "billing.py", "content": "def total(items):\n    return sum(i['price'] for i in items)\n\n\ndef apply_discount(amount, percent):\n    \"\"\"Three days of work that is about to disappear.\"\"\"\n    if not 0 <= percent <= 100:\n        raise ValueError('percent out of range')\n    return round(amount * (1 - percent / 100), 2)\n" } },
+    { "commit": { "message": "Add discount calculation" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "billing.py", "content": "def total(items):\n    return round(sum(i['price'] for i in items), 2)\n\n\ndef tax(amount):\n    return round(amount * 0.2, 2)\n" } },
+    { "commit": { "message": "Add tax and round totals" } },
+    { "run": "sh -c 'git merge -q --no-ff -m \"Merge discounts\" feature/discounts || true'" },
+    { "write": { "path": "billing.py", "content": "def total(items):\n    return round(sum(i['price'] for i in items), 2)\n\n\ndef tax(amount):\n    return round(amount * 0.2, 2)\n" } },
+    { "run": "git add billing.py" },
+    { "run": "git commit -q --no-edit" },
+    { "write": { "path": "app.py", "content": "print('billing service')\n" } },
+    { "commit": { "message": "Add entrypoint" } }
+  ],
+  "steps": [
+    {
+      "title": "Confirm the code is gone",
+      "why": "`apply_discount` is not in the working tree and not in HEAD. Before any investigation, establish exactly what is missing and where it should be.",
+      "commands": ["cat billing.py", "sh -c 'git grep apply_discount || echo \"not in the working tree\"'", "git log --oneline --graph -4"],
+      "expect": "No sign of the function, and a merge commit in recent history."
+    },
+    {
+      "title": "Blame is no help here",
+      "why": "Blame reports who last touched the lines that exist. A line that was deleted has nothing to blame — this is the specific failure mode that sends people to `git log -S`.",
+      "commands": ["git blame billing.py", "sh -c 'git log --oneline -S apply_discount || true'"],
+      "expect": "Blame shows only surviving lines; the pickaxe finds the commit that introduced the function."
+    },
+    {
+      "title": "Find where the function lived and died",
+      "why": "`log -S` searches every commit's content. `--all` covers the feature branch too. Two results: the commit that added it, and the merge that lost it.",
+      "commands": ["git log --all --oneline -S apply_discount", "sh -c 'git log --all --oneline -S apply_discount --diff-merges=first-parent'"],
+      "expect": "The discount commit on the branch, and the merge on main.",
+      "verify": [
+        { "cmd": "git log --all --oneline -S apply_discount", "not_empty": true,
+          "label": "the pickaxe found where the function existed" }
+      ]
+    },
+    {
+      "title": "Diff the merge against each parent",
+      "why": "This is the key move. `<merge>^1` is main before the merge, `<merge>^2` is the branch. Against parent 2 the function shows as REMOVED — proof the merge dropped it rather than never having it.",
+      "commands": ["sh -c 'merge=$(git log --merges -1 --format=%H); echo merge=$merge; git diff $merge^1 $merge -- billing.py'", "sh -c 'merge=$(git log --merges -1 --format=%H); git diff $merge^2 $merge -- billing.py'"],
+      "expect": "Against parent 1: tax and rounding kept. Against parent 2: apply_discount removed with a minus sign.",
+      "verify": [
+        { "cmd": "sh -c 'merge=$(git log --merges -1 --format=%H); git diff $merge^2 $merge -- billing.py | grep -c \"^-.*apply_discount\"'",
+          "not_empty": true,
+          "label": "the merge removed the function relative to the branch it merged" }
+      ]
+    },
+    {
+      "title": "Read the merge the way git shows it by default",
+      "why": "`git show <merge>` prints a combined diff, which shows only hunks that differ from BOTH parents — precisely the lines a resolution changed. It is the fastest way to review a merge resolution, and almost nobody knows it exists.",
+      "commands": ["sh -c 'git show $(git log --merges -1 --format=%H) --stat'", "sh -c 'git show --cc $(git log --merges -1 --format=%H) -- billing.py'"],
+      "expect": "The combined diff highlighting exactly what the resolver dropped."
+    },
+    {
+      "title": "Recover the function from the parent",
+      "why": "The branch's version is still in history — the merge did not delete the commit, only its content in the result. Read the file from parent 2 and put the function back.",
+      "commands": ["sh -c 'merge=$(git log --merges -1 --format=%H); git show $merge^2:billing.py'"],
+      "expect": "The original file, complete with apply_discount."
+    },
+    {
+      "title": "Restore it properly and prove the fix",
+      "why": "Write the union of both sides: main's rounding and tax, plus the branch's discount function. Then confirm the pickaxe finds it in HEAD, so the next person does not repeat this investigation.",
+      "actions": [
+        { "write": { "path": "billing.py", "content": "def total(items):\n    return round(sum(i['price'] for i in items), 2)\n\n\ndef tax(amount):\n    return round(amount * 0.2, 2)\n\n\ndef apply_discount(amount, percent):\n    \"\"\"Restored: dropped by a bad conflict resolution in the discounts merge.\"\"\"\n    if not 0 <= percent <= 100:\n        raise ValueError('percent out of range')\n    return round(amount * (1 - percent / 100), 2)\n" } },
+        { "run": "git add billing.py" },
+        { "run": "git commit -q -m \"Restore apply_discount, lost in the discounts merge resolution\"" }
+      ],
+      "commands": ["cat billing.py", "git log --oneline -3", "sh -c 'git log --oneline -S apply_discount'"],
+      "verify": [
+        { "cmd": "cat billing.py", "contains": ["apply_discount", "def tax", "round(sum"],
+          "label": "both sides' code is present now",
+          "hint": "restore the function from <merge>^2 and keep main's changes too" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat billing.py", "contains": ["def apply_discount", "def tax", "percent out of range"],
+      "label": "the lost function is restored alongside main's work",
+      "hint": "git show <merge>^2:billing.py has the original" },
+    { "cmd": "git log --oneline -S apply_discount", "not_empty": true,
+      "label": "the pickaxe now finds it on main" },
+    { "cmd": "git log --pretty=%s -1", "contains": "Restore apply_discount",
+      "label": "the recovery commit explains what happened, for the next reader" },
+    { "cmd": "git log --oneline --merges", "lines": 1,
+      "label": "the bad merge is still in history — you fixed forward, did not rewrite" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`git log` and `git blame` hide merge diffs by default, which is why lost code looks like it vanished without a commit. `--diff-merges` or diffing against each parent reveals it.",
+    "`<merge>^1` is the branch merged INTO, `^2` is the branch merged FROM. Getting them the wrong way round inverts your conclusion entirely.",
+    "The commonest cause is resolving a conflict by taking one whole side — `git checkout --ours <file>` on a file where both sides had real changes.",
+    "Reviewing merge commits with `git show --cc` before pushing catches this class of mistake in seconds.",
+    "Turning on `merge.conflictStyle zdiff3` makes the base visible during resolution, which is the best prevention available."
+  ],
+  "cheatsheet": [
+    ["git log --all -S <symbol>", "every commit where the symbol count changed"],
+    ["git diff <merge>^1 <merge>", "what the merge did relative to the target branch"],
+    ["git diff <merge>^2 <merge>", "…relative to the branch merged in"],
+    ["git show --cc <merge>", "combined diff: only what the resolution changed"],
+    ["git log --diff-merges=first-parent -p", "include merge diffs in log output"],
+    ["git show <merge>^2:<file>", "the file as the merged branch had it"]
+  ]
+}

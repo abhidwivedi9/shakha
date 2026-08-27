@@ -1,0 +1,128 @@
+{
+  "id": "incidents-unrelated-histories",
+  "title": "\"refusing to merge unrelated histories\"",
+  "category": "incidents",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Someone initialised a new repository locally while the server already had one. The two share no commits at all. Understand why git refuses, then join them without losing either side.",
+  "concepts": ["no common ancestor", "--allow-unrelated-histories", "merge base", "two root commits", "re-clone as the alternative"],
+  "mental_model": "Merging needs a merge base — a commit both sides descend from. Two independently initialised repositories have none, so git refuses rather than inventing a base. The flag says 'treat the empty tree as the base', which is almost always a sign something went wrong earlier.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n\nThe real project, already on the server.\n" } },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial project" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git init -q -b main ../fresh-start" },
+    { "cwd": "fresh-start", "write": { "path": "README.md", "content": "# Reef Controller\n\nStarted from scratch by mistake.\n" } },
+    { "cwd": "fresh-start", "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "cwd": "fresh-start", "run": "git add -A" },
+    { "cwd": "fresh-start", "run": "git commit -q -m \"Add dosing module\"" },
+    { "cwd": "fresh-start", "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "cwd": "fresh-start", "run": "git add -A" },
+    { "cwd": "fresh-start", "run": "git commit -q -m \"Add temperature alerts\"" },
+    { "cwd": "fresh-start", "run": "sh -c 'git remote add origin ../origin.git && git fetch -q origin'" }
+  ],
+  "steps": [
+    {
+      "title": "See two histories that share nothing",
+      "why": "The local branch and origin/main each have their own root commit. There is no commit in common, which is exactly the condition git refuses to merge across.",
+      "cwd": "fresh-start",
+      "commands": ["git log --oneline", "git log --oneline origin/main", "git log --oneline --graph --all --decorate", "sh -c 'git rev-list --max-parents=0 --all'"],
+      "expect": "Two root commits — the tell-tale sign.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --max-parents=0 --all | wc -l'", "cwd": "fresh-start",
+          "equals": "2", "label": "there are two independent root commits" }
+      ]
+    },
+    {
+      "title": "Confirm there is no merge base",
+      "why": "`merge-base` is the command git runs internally before merging. It returns nothing and exits non-zero — no shared ancestor, therefore no three-way merge is possible.",
+      "cwd": "fresh-start",
+      "commands": ["sh -c 'git merge-base HEAD origin/main; echo \"exit: $?\"'", "sh -c 'git merge-base --is-ancestor HEAD origin/main; echo \"is-ancestor exit: $?\"'"],
+      "expect": "No output and a non-zero exit — the mathematical reason for the refusal."
+    },
+    {
+      "title": "Watch the refusal, and the push rejection",
+      "why": "Both operations fail for the same underlying reason. The error message is unusually clear about what git will not do, and unusually unclear about what you should do instead.",
+      "cwd": "fresh-start",
+      "commands": ["git merge origin/main", "git push origin main"],
+      "expect": "fatal: refusing to merge unrelated histories, then a non-fast-forward rejection."
+    },
+    {
+      "title": "Consider the option people forget",
+      "why": "If the local repository has only a couple of commits, cloning properly and re-applying them by hand is cleaner than joining two roots. Reach for the flag only when the local history is genuinely worth keeping.",
+      "cwd": "fresh-start",
+      "commands": ["git log --oneline", "git diff --stat HEAD origin/main", "ls"],
+      "expect": "Two commits and two files — small enough that re-doing them would have been reasonable."
+    },
+    {
+      "title": "Join them deliberately",
+      "why": "`--allow-unrelated-histories` tells git to use the empty tree as the base. Files present on one side only merge in cleanly; files on both sides — README.md here — conflict, because from the empty base both sides 'added' them.",
+      "cwd": "fresh-start",
+      "commands": ["git merge --allow-unrelated-histories origin/main", "git status --short", "cat README.md"],
+      "expect": "An add/add conflict on README.md, and everything else merged.",
+      "verify": [
+        { "cmd": "git status --porcelain", "cwd": "fresh-start", "contains": "README.md",
+          "label": "the shared file conflicts as an add/add" }
+      ]
+    },
+    {
+      "title": "Resolve and complete the merge",
+      "why": "Write the version that reflects reality — the server's project description — and finish. The result contains both sides' code and two root commits, which is unusual but perfectly valid.",
+      "actions": [
+        { "cwd": "fresh-start", "write": { "path": "README.md", "content": "# Reef Controller\n\nThe real project, already on the server.\n\nDosing and alerts were developed in a separate repository by mistake and\nmerged in with --allow-unrelated-histories.\n" } },
+        { "cwd": "fresh-start", "run": "git add README.md" },
+        { "cwd": "fresh-start", "run": "git commit -q --no-edit" }
+      ],
+      "cwd": "fresh-start",
+      "commands": ["git log --oneline --graph -6", "ls", "sh -c 'git rev-list --max-parents=0 HEAD | wc -l'"],
+      "expect": "Every file present, and HEAD reachable from two root commits.",
+      "verify": [
+        { "cmd": "sh -c 'ls'", "cwd": "fresh-start",
+          "contains": ["app.py", "pump.py", "dosing.py", "alerts.py"],
+          "label": "both projects' files are present" }
+      ]
+    },
+    {
+      "title": "Push the joined history",
+      "why": "The branch now contains origin/main, so the push is an ordinary fast-forward. Nobody has to force anything, and no work was thrown away.",
+      "cwd": "fresh-start",
+      "commands": ["git push origin main", "git log --oneline origin/main", "sh -c 'git rev-list --max-parents=0 origin/main | wc -l'"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "lines": 5,
+          "label": "the server has both histories joined",
+          "hint": "merge with --allow-unrelated-histories, resolve, then push" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin", "lines": 5,
+      "label": "the server has the joined history",
+      "hint": "git merge --allow-unrelated-histories origin/main" },
+    { "cmd": "git ls-tree -r main --name-only", "cwd": "origin",
+      "contains": ["app.py", "pump.py", "dosing.py", "alerts.py"],
+      "label": "no work from either side was lost" },
+    { "cmd": "sh -c 'git rev-list --max-parents=0 main | wc -l'", "cwd": "origin", "equals": "2",
+      "label": "the result legitimately has two root commits" },
+    { "cmd": "git show main:README.md", "cwd": "origin", "not_contains": "<<<<<<<",
+      "label": "the add/add conflict was resolved properly" }
+  ],
+  "pitfalls": [
+    "The usual cause is `git init` in a directory that should have been a `git clone`. Check for that before merging anything.",
+    "Every file existing on both sides becomes an add/add conflict, because from an empty base both sides added it. On a large project that is hundreds of conflicts.",
+    "`--allow-unrelated-histories` was made non-default deliberately: the refusal catches a genuine mistake far more often than it obstructs a real need.",
+    "Two root commits confuse some tools and make `git log --graph` harder to read forever. If the local history is small, re-doing the work in a proper clone is often the better trade."
+  ],
+  "cheatsheet": [
+    ["git merge-base A B", "the shared ancestor — empty means unrelated"],
+    ["git rev-list --max-parents=0 --all", "count root commits"],
+    ["git merge --allow-unrelated-histories <ref>", "join them, empty tree as the base"],
+    ["git pull --allow-unrelated-histories", "the same, in one step"],
+    ["git remote add origin <url> && git fetch", "the setup that makes the two visible"],
+    ["git clone <url>", "what should have happened in the first place"]
+  ]
+}
