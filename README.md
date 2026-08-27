@@ -17,6 +17,11 @@ Requires Python 3.9+ and git. No pip install, no npm install, no build step.
 
 ## What it looks like
 
+The catalogue opens on **Path** — an ordered route through every scenario in six
+stages, from a first commit to the object database — with **Categories** a click
+away when you want to look something up instead. `n` jumps to the next thing you
+have not solved.
+
 Three panes that are always in sync:
 
 | Pane | What it holds |
@@ -38,7 +43,8 @@ repository, so solving a scenario your own way counts exactly the same.
 
 ```
 python shakhactl.py dashboard      # start the dashboard
-python shakhactl.py list           # every scenario, grouped
+python shakhactl.py list           # every scenario, grouped by category
+python shakhactl.py path           # the ordered learning path, with your progress
 python shakhactl.py start <id>     # build a sandbox on disk
 python shakhactl.py verify <id>    # grade it from the terminal (exit 0 = solved)
 python shakhactl.py reset <id>     # rebuild it from scratch
@@ -57,6 +63,7 @@ server/
   grader.py         declarative checks against the real repo
 web/                index.html + app.js + style.css, vanilla, no build
 scenarios/<ID>/     scenario.json (+ optional explain.md)
+curriculum.json     the ordered learning path, in six stages
 tools/
   test_scenarios.py runs every scenario's own steps and grades them
 workspaces/         the sandboxes — gitignored, disposable, rebuilt on demand
@@ -125,6 +132,7 @@ Create `scenarios/<ID>/scenario.json`. No server code changes. See
 - **M2 — the full loop** ✅ step buttons, free terminal, file editor, grading, progress
 - **M3–M6 — the catalog** ✅ all 20 categories, 123 scenarios, all passing
 - **M7 — navigation** ✅ level filters, unsolved-only, progress bar, generated cheatsheet
+- **M8 — the path** ✅ a six-stage curriculum covering all 123 scenarios, in the UI and the CLI
 
 Next: `explain.md` long-form notes for the expert scenarios, and a spaced-repetition
 mode that resurfaces scenarios you solved a while ago.

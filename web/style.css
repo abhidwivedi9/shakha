@@ -68,10 +68,37 @@ html, body {
 }
 .progress-fill { height: 100%; width: 0; background: var(--green); transition: width .25s ease; }
 
+.viewswitch {
+  display: flex; gap: 0; padding: 8px 10px 0; flex: 0 0 auto;
+}
+.viewbtn {
+  flex: 1; font-size: 11.5px; padding: 5px 8px; border-radius: 0;
+  background: transparent; border: 1px solid var(--line); color: var(--ink-dim);
+}
+.viewbtn:first-child { border-radius: 5px 0 0 5px; }
+.viewbtn:last-child { border-radius: 0 5px 5px 0; border-left: none; }
+.viewbtn.active {
+  background: rgba(88,166,255,.15); border-color: rgba(88,166,255,.45); color: var(--accent);
+}
+
 .filters {
   display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 10px;
   border-bottom: 1px solid var(--line); flex: 0 0 auto;
 }
+
+/* the curriculum view */
+.stage .cat-head { font-size: 12.5px; }
+.stage-done .cat-head { color: var(--green); }
+.stage-track {
+  height: 3px; background: var(--panel-2); margin: 0 14px 6px;
+  border-radius: 2px; overflow: hidden;
+}
+.stage-fill { height: 100%; background: var(--green); transition: width .25s ease; }
+.stage-summary {
+  display: none; padding: 0 14px 10px; font-size: 11.5px; line-height: 1.55;
+  color: var(--ink-dim);
+}
+.stage.open .stage-summary { display: block; }
 .filter {
   font-size: 11px; padding: 3px 8px; border-radius: 999px;
   background: transparent; border: 1px solid var(--line); color: var(--ink-dim);

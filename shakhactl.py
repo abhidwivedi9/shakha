@@ -58,6 +58,37 @@ def cmd_list(args):
     print("\n%d scenarios" % len(catalog.all()))
 
 
+def cmd_path(args):
+    catalog = _catalog()
+    curriculum = catalog.curriculum()
+    progress = {}
+    progress_file = ROOT / "progress.json"
+    if progress_file.is_file():
+        import json
+        try:
+            with open(progress_file, encoding="utf-8") as handle:
+                progress = json.load(handle).get("scenarios", {})
+        except (OSError, ValueError):
+            progress = {}
+
+    print("%s\n%s\n" % (curriculum["title"], curriculum.get("summary", "")))
+    for stage in curriculum["stages"]:
+        items = stage["scenarios"]
+        solved = sum(1 for i in items if progress.get(i["id"], {}).get("solved"))
+        print("%s  (%d/%d)" % (stage["title"].upper(), solved, len(items)))
+        if stage.get("summary"):
+            print("  %s" % stage["summary"])
+        for item in items:
+            mark = "x" if progress.get(item["id"], {}).get("solved") else " "
+            print("  [%s] %-42s %s" % (mark, item["id"], item["title"]))
+        print()
+
+    if curriculum["unplaced"]:
+        print("NOT IN THE PATH (%d):" % len(curriculum["unplaced"]))
+        for scenario_id in curriculum["unplaced"]:
+            print("      %s" % scenario_id)
+
+
 def cmd_start(args):
     catalog = _catalog()
     scenario = _need(catalog, args.id)
@@ -113,6 +144,14 @@ def cmd_doctor(args):
     print("scenarios: %d loaded, %d broken" % (len(catalog.all()), len(broken)))
     for scenario_id in broken:
         print("           broken: %s" % scenario_id)
+    curriculum = catalog.curriculum()
+    staged = sum(len(s["scenarios"]) for s in curriculum["stages"])
+    print("path     : %d stages, %d placed, %d unplaced"
+          % (len(curriculum["stages"]), staged, len(curriculum["unplaced"])))
+    for scenario_id in curriculum["unplaced"]:
+        print("           unplaced: %s" % scenario_id)
+    if curriculum["unplaced"]:
+        ok = False
     print("workspaces: %s" % WORKSPACES_DIR)
     sys.exit(0 if ok and not broken else 1)
 
@@ -128,6 +167,7 @@ def main():
     dash.set_defaults(func=cmd_dashboard)
 
     subparsers.add_parser("list", help="list scenarios").set_defaults(func=cmd_list)
+    subparsers.add_parser("path", help="the ordered learning path").set_defaults(func=cmd_path)
 
     for name, func, helptext in (("start", cmd_start, "build a scenario sandbox"),
                                  ("reset", cmd_reset, "rebuild a scenario sandbox"),

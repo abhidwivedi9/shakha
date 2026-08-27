@@ -49,13 +49,17 @@ class Scenario(dict):
 
 
 class Catalog:
-    def __init__(self, scenarios_dir: Path):
+    def __init__(self, scenarios_dir: Path, curriculum_file=None):
         self.dir = Path(scenarios_dir)
+        self.curriculum_file = (Path(curriculum_file) if curriculum_file
+                                else self.dir.parent / "curriculum.json")
         self._cache = {}
+        self._curriculum = None
         self.reload()
 
     def reload(self) -> None:
         self._cache = {}
+        self._curriculum = None
         if not self.dir.exists():
             return
         for folder in sorted(self.dir.iterdir()):
@@ -97,6 +101,50 @@ class Catalog:
                            s.get("order", 999), s.get("title", "")),
         )
 
+    def curriculum(self) -> dict:
+        """The ordered learning path, with any unknown ids dropped.
+
+        The path is authored separately from the catalog, so a scenario that is
+        renamed or removed must not break the dashboard -- it simply falls out
+        of the path, and `unplaced` reports anything the path has not covered.
+        """
+        if self._curriculum is not None:
+            return self._curriculum
+
+        doc = {"title": "The Shakha path", "summary": "", "stages": []}
+        if self.curriculum_file.is_file():
+            try:
+                with open(self.curriculum_file, encoding="utf-8") as handle:
+                    doc = json.load(handle)
+            except (OSError, json.JSONDecodeError):
+                pass
+
+        placed, stages = set(), []
+        for stage in doc.get("stages", []):
+            items = []
+            for scenario_id in stage.get("scenarios", []):
+                scenario = self._cache.get(scenario_id)
+                if not scenario:
+                    continue
+                placed.add(scenario_id)
+                items.append({
+                    "id": scenario_id,
+                    "title": scenario.get("title", scenario_id),
+                    "level": scenario.get("level", "beginner"),
+                    "category": scenario.get("category"),
+                    "duration_min": scenario.get("duration_min", 10),
+                })
+            stages.append({"key": stage.get("key", ""), "title": stage.get("title", ""),
+                           "summary": stage.get("summary", ""), "scenarios": items})
+
+        self._curriculum = {
+            "title": doc.get("title", "The Shakha path"),
+            "summary": doc.get("summary", ""),
+            "stages": stages,
+            "unplaced": sorted(s["id"] for s in self._cache.values() if s["id"] not in placed),
+        }
+        return self._curriculum
+
     def summary(self) -> dict:
         """Everything the left-hand catalog pane needs, grouped by category."""
         groups = {}
@@ -119,4 +167,5 @@ class Catalog:
             ],
             "total": len(self._cache),
             "levels": LEVELS,
+            "curriculum": self.curriculum(),
         }

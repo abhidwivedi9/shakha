@@ -26,6 +26,7 @@ const state = {
   historyAt: 0,
   level: '',          // catalog filter: level
   unsolvedOnly: false,
+  view: 'path',       // 'path' (the curriculum) or 'category'
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -66,7 +67,82 @@ function matchesFilters(s, query) {
     || (s.summary || '').toLowerCase().includes(query);
 }
 
+function scenarioRow(item) {
+  const prog = state.progress[item.id] || {};
+  const row = el('div', 'cat-item');
+  if (prog.solved) row.classList.add('solved');
+  else if (prog.started) row.classList.add('started');
+  if (state.current && state.current.id === item.id) row.classList.add('active');
+  row.appendChild(el('span', 'tick', prog.solved ? '✔' : (prog.started ? '◐' : '○')));
+  row.appendChild(el('span', 'title', item.title));
+  row.onclick = () => openScenario(item.id);
+  return row;
+}
+
+function renderGroup(list, label, items, openWhen) {
+  const group = el('div', 'cat-group');
+  if (openWhen) group.classList.add('open');
+  const head = el('div', 'cat-head');
+  head.appendChild(el('span', null, label));
+  const solved = items.filter((i) => (state.progress[i.id] || {}).solved).length;
+  head.appendChild(el('span', 'count', `${solved}/${items.length}`));
+  head.onclick = () => group.classList.toggle('open');
+  group.appendChild(head);
+
+  const box = el('div', 'cat-items');
+  items.forEach((item) => box.appendChild(scenarioRow(item)));
+  group.appendChild(box);
+  list.appendChild(group);
+  return group;
+}
+
+function renderPath() {
+  const query = $('#search').value.trim().toLowerCase();
+  const list = $('#catalog-list');
+  list.innerHTML = '';
+
+  const curriculum = state.catalog.curriculum;
+  if (!curriculum || !curriculum.stages.length) {
+    list.appendChild(el('p', 'muted pad', 'No learning path is defined.'));
+    return;
+  }
+
+  let firstUnfinished = true;
+  curriculum.stages.forEach((stage) => {
+    const items = stage.scenarios.filter((s) => matchesFilters(s, query));
+    if (!items.length) return;
+
+    const solved = stage.scenarios.filter((s) => (state.progress[s.id] || {}).solved).length;
+    const complete = solved === stage.scenarios.length;
+    /* open the first stage that still has work in it */
+    const openWhen = !!query || (!complete && firstUnfinished)
+      || (state.current && items.some((i) => i.id === state.current.id));
+    if (!complete && firstUnfinished) firstUnfinished = false;
+
+    const group = renderGroup(list, stage.title, items, openWhen);
+    group.classList.add('stage');
+    if (complete) group.classList.add('stage-done');
+
+    const bar = el('div', 'stage-track');
+    const fill = el('div', 'stage-fill');
+    fill.style.width = `${Math.round((solved / stage.scenarios.length) * 100)}%`;
+    bar.appendChild(fill);
+    group.querySelector('.cat-head').after(bar);
+
+    if (stage.summary) {
+      const note = el('div', 'stage-summary', stage.summary);
+      bar.after(note);
+    }
+  });
+
+  if (!list.children.length) {
+    list.appendChild(el('p', 'muted pad', 'Nothing matches that search and filter.'));
+  }
+}
+
 function renderCatalog() {
+  if (state.view === 'path') return renderPath();
+
   const query = $('#search').value.trim().toLowerCase();
   const list = $('#catalog-list');
   list.innerHTML = '';
@@ -114,7 +190,13 @@ function renderCatalog() {
 /* ------------------------------------------------------------- navigation */
 
 function allScenarios() {
-  return state.catalog ? state.catalog.categories.flatMap((c) => c.scenarios) : [];
+  if (!state.catalog) return [];
+  /* In path view, "next" should follow the curriculum's order, not the catalogue's. */
+  if (state.view === 'path' && state.catalog.curriculum) {
+    const ordered = state.catalog.curriculum.stages.flatMap((s) => s.scenarios);
+    if (ordered.length) return ordered;
+  }
+  return state.catalog.categories.flatMap((c) => c.scenarios);
 }
 
 function openNextUnsolved() {
@@ -786,6 +868,14 @@ document.querySelectorAll('.filter[data-level]').forEach((btn) => {
   btn.addEventListener('click', () => {
     state.level = btn.dataset.level;
     document.querySelectorAll('.filter[data-level]').forEach((b) => b.classList.toggle('active', b === btn));
+    renderCatalog();
+  });
+});
+
+document.querySelectorAll('.viewbtn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    state.view = btn.dataset.view;
+    document.querySelectorAll('.viewbtn').forEach((b) => b.classList.toggle('active', b === btn));
     renderCatalog();
   });
 });

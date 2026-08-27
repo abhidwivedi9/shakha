@@ -101,7 +101,7 @@ Write checks against repository state, never against the learner's route to it â
 a scenario solved by hand in the terminal must grade identically to one solved
 with the buttons.
 
-## Lessons from writing 106 of them
+## Lessons from writing 123 of them
 
 These all cost a debugging round the first time:
 
@@ -126,6 +126,20 @@ These all cost a debugging round the first time:
   --author=...'`).
 - **On Windows `chmod` is a no-op** and `core.fileMode` defaults to false. Use
   `git update-index --chmod=+x` to demonstrate mode changes portably.
+
+## Putting it in the learning path
+
+`curriculum.json` at the repository root defines the six-stage path the dashboard
+opens on. Add your scenario's id to the stage it belongs in:
+
+```json
+{ "key": "recovery", "title": "When it goes wrong",
+  "summary": "...", "scenarios": ["undo-reflog-rescue", "your-new-scenario"] }
+```
+
+`python shakhactl.py doctor` fails if any scenario is missing from the path, so
+this cannot be forgotten. Unknown ids in the path are ignored rather than fatal,
+which means renaming a scenario degrades gracefully.
 
 ## Testing it
 

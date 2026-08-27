@@ -21,7 +21,7 @@ jobs:
       - name: Show the git version under test
         run: git --version
 
-      - name: Catalog loads and the toolchain is sane
+      - name: Catalog loads, the path covers it, and the toolchain is sane
         run: python shakhactl.py doctor
 
       - name: Every scenario's own steps must solve it
@@ -44,4 +44,10 @@ jobs:
           populated = [c['key'] for c in data['categories'] if c['scenarios']]
           assert len(populated) == 20, 'empty categories: %s' % (
               [c['key'] for c in data['categories'] if not c['scenarios']],)
+          path = data['curriculum']
+          placed = sum(len(s['scenarios']) for s in path['stages'])
+          print('path stages:', len(path['stages']), 'placed:', placed)
+          assert path['stages'], 'the dashboard served no learning path'
+          assert not path['unplaced'], 'scenarios missing from the path: %s' % (path['unplaced'],)
+          assert placed == data['total'], 'path covers %d of %d scenarios' % (placed, data['total'])
           PY
