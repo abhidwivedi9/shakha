@@ -1,0 +1,147 @@
+{
+  "id": "history-notes",
+  "title": "Annotate a commit without rewriting it",
+  "category": "history",
+  "level": "expert",
+  "order": 8,
+  "duration_min": 14,
+  "summary": "git notes attach text to a commit after the fact — review outcomes, CI results, incident links — without changing its sha. Learn why they are invisible by default, and how to share them.",
+  "concepts": ["git notes add/show", "notes do not change the sha", "refs/notes/*", "log --notes", "pushing and fetching notes", "notes namespaces"],
+  "mental_model": "A commit is immutable, so anything learned after it was made cannot go in its message. Notes live in a separate ref and are attached by sha — mutable metadata bolted onto immutable history.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Add the entrypoint" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "commit": { "message": "Raise the pump speed" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "The problem notes solve",
+      "why": "Six weeks after a commit shipped, you learn it caused an incident. That fact belongs with the commit — but amending it would rewrite history everyone has pulled, for a comment.",
+      "commands": ["git log --oneline", "sh -c 'echo pump commit: $(git log -1 --format=%H --grep=\"Raise the pump\")'"],
+      "expect": "Three commits, one of which needs annotating."
+    },
+    {
+      "title": "Attach a note",
+      "why": "`notes add` writes the text into a separate ref keyed by commit sha. The commit object is untouched, so nothing downstream of it changes.",
+      "actions": [
+        { "run": "sh -c 'git notes add -m \"Caused INC-2026-014: pump cavitation above 1500 RPM. Reverted in production, re-landed with a ramp in the next release.\" $(git log -1 --format=%H --grep=\"Raise the pump\")'" }
+      ],
+      "commands": ["sh -c 'git notes show $(git log -1 --format=%H --grep=\"Raise the pump\")'", "git log --oneline"],
+      "expect": "The note prints, and the log looks exactly as before.",
+      "verify": [
+        { "cmd": "sh -c 'git notes show $(git log -1 --format=%H --grep=\"Raise the pump\")'",
+          "contains": "INC-2026-014",
+          "label": "the note is attached to the commit",
+          "hint": "git notes add -m \"...\" <sha>" }
+      ]
+    },
+    {
+      "title": "Prove the sha did not change",
+      "why": "This is the entire point. Compare the commit's sha before and after — identical — which is why notes are safe to add to public history and amending is not.",
+      "commands": ["sh -c 'git log -1 --format=%H --grep=\"Raise the pump\"'", "sh -c 'git cat-file -p $(git log -1 --format=%H --grep=\"Raise the pump\")'", "git log --oneline"],
+      "expect": "A commit object with no note in it — the note lives elsewhere.",
+      "verify": [
+        { "cmd": "sh -c 'git cat-file -p $(git log -1 --format=%H --grep=\"Raise the pump\") | grep -c INC-2026 || true'",
+          "equals": "0", "allow_failure": true,
+          "label": "the commit object itself is unchanged" }
+      ]
+    },
+    {
+      "title": "Find where notes actually live",
+      "why": "`refs/notes/commits` is an ordinary ref pointing at an ordinary commit, whose tree maps commit shas to note blobs. Nothing exotic — which means every recovery trick you know still applies.",
+      "commands": ["git for-each-ref refs/notes", "sh -c 'git log --oneline refs/notes/commits'", "sh -c 'git cat-file -p refs/notes/commits^{tree} | head -3'"],
+      "expect": "A notes ref, its own commit history, and a tree keyed by commit sha."
+    },
+    {
+      "title": "See them in the log",
+      "why": "`git log` shows notes by default in most versions; `--notes` forces it and `--no-notes` hides them. In a format string, `%N` prints the note — useful for building an annotated changelog.",
+      "commands": ["git log --notes --oneline -3", "git log --format='%h %s%n   note: %N' -3", "git log --no-notes --oneline -3"],
+      "expect": "The note attached under its commit, and absent when suppressed."
+    },
+    {
+      "title": "Use a namespace for machine-written notes",
+      "why": "`--ref` gives notes their own namespace, so CI results do not collide with human annotations. This is how build systems record test outcomes and durations against a commit.",
+      "actions": [
+        { "run": "sh -c 'git notes --ref=ci add -m \"build=passed duration=94s runner=linux-x64\" $(git log -1 --format=%H)'" },
+        { "run": "sh -c 'git notes --ref=ci add -m \"build=failed duration=31s runner=linux-x64\" $(git log -1 --format=%H --grep=\"Raise the pump\")'" }
+      ],
+      "commands": ["git for-each-ref refs/notes", "sh -c 'git notes --ref=ci show $(git log -1 --format=%H)'", "git log --format='%h %s | ci: %N' --notes=ci -3"],
+      "verify": [
+        { "cmd": "sh -c 'git notes --ref=ci show $(git log -1 --format=%H)'", "contains": "build=passed",
+          "label": "CI results live in their own notes namespace",
+          "hint": "git notes --ref=ci add -m \"...\" <sha>" },
+        { "cmd": "git for-each-ref refs/notes", "contains": ["refs/notes/commits", "refs/notes/ci"],
+          "label": "two independent namespaces exist" }
+      ]
+    },
+    {
+      "title": "Notes are not pushed by default",
+      "why": "This is why most people have never seen one. `git push` sends branches and, with `--follow-tags`, tags — never notes. They need their refspec naming explicitly.",
+      "commands": ["git push -q origin main", "sh -c 'cd ../origin.git && git for-each-ref refs/notes | wc -l'", "sh -c 'git push origin refs/notes/*:refs/notes/*'", "sh -c 'cd ../origin.git && git for-each-ref refs/notes'"],
+      "expect": "Zero notes refs on the server after a normal push, both of them after the explicit one.",
+      "verify": [
+        { "cmd": "git for-each-ref refs/notes", "cwd": "origin", "contains": "refs/notes/commits",
+          "label": "notes reached the server once pushed explicitly",
+          "hint": "git push origin refs/notes/*:refs/notes/*" }
+      ]
+    },
+    {
+      "title": "Make fetching them automatic",
+      "why": "Adding a fetch refspec means colleagues receive notes with an ordinary `git fetch`. Without this, a note you push is invisible to everyone — the single reason notes are rare in practice.",
+      "actions": [
+        { "run": "sh -c 'git config --add remote.origin.fetch \"+refs/notes/*:refs/notes/*\"'" }
+      ],
+      "commands": ["git config --get-all remote.origin.fetch", "git fetch origin", "git log --notes --oneline -3"],
+      "verify": [
+        { "cmd": "git config --get-all remote.origin.fetch", "lines": 2,
+          "label": "notes are fetched alongside branches from now on",
+          "hint": "git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'" }
+      ]
+    },
+    {
+      "title": "Edit and remove",
+      "why": "Notes are mutable — that is their advantage and their weakness. Editing one leaves no trace in the commit, and two people editing the same note conflict like any other ref.",
+      "commands": ["sh -c 'git notes append -m \"Prevention: added a ramp and a regression test.\" $(git log -1 --format=%H --grep=\"Raise the pump\")'", "sh -c 'git notes show $(git log -1 --format=%H --grep=\"Raise the pump\")'", "sh -c 'git notes --ref=ci remove $(git log -1 --format=%H)'", "git for-each-ref refs/notes"],
+      "verify": [
+        { "cmd": "sh -c 'git notes show $(git log -1 --format=%H --grep=\"Raise the pump\")'",
+          "contains": ["INC-2026-014", "Prevention"],
+          "label": "the note was extended without touching the commit" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git notes show $(git log -1 --format=%H --grep=\"Raise the pump\")'",
+      "contains": ["INC-2026-014", "Prevention"],
+      "label": "the incident annotation is attached to the commit that caused it",
+      "hint": "git notes add, then git notes append" },
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "history is unchanged — notes never rewrite anything" },
+    { "cmd": "git for-each-ref refs/notes", "cwd": "origin", "contains": "refs/notes/commits",
+      "label": "the notes were published to the server",
+      "hint": "they need their own refspec; a normal push ignores them" },
+    { "cmd": "git config --get-all remote.origin.fetch", "lines": 2,
+      "label": "colleagues will now receive notes on an ordinary fetch" }
+  ],
+  "pitfalls": [
+    "Notes are invisible by default because they are neither pushed nor fetched without an explicit refspec. Configure both, or nobody else will ever see them.",
+    "A rebase or amend changes the commit sha, and the note stays attached to the OLD sha. `notes.rewriteRef` can carry them across rewrites, but it is off for rebase by default.",
+    "Two people editing the same note produce a conflict on `refs/notes/commits`, resolved with `git notes merge`. It is rarer and stranger than a normal merge conflict.",
+    "Because notes are mutable and unsigned, they are metadata, not evidence. Anything that must be tamper-evident belongs in the commit message.",
+    "Forges vary in support: some display notes, some ignore them entirely. Do not build a process on them without checking."
+  ],
+  "cheatsheet": [
+    ["git notes add -m \"...\" <sha>", "attach a note to a commit"],
+    ["git notes append -m \"...\" <sha>", "extend an existing note"],
+    ["git notes show <sha>", "read it"],
+    ["git notes --ref=ci add ...", "a separate namespace for machine data"],
+    ["git log --notes / --no-notes", "show or hide them"],
+    ["git log --format='%h %N'", "notes in a format string"],
+    ["git push origin refs/notes/*:refs/notes/*", "publish them"],
+    ["git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'", "receive them"]
+  ]
+}

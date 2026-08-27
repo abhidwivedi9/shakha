@@ -1,0 +1,178 @@
+{
+  "id": "merging-custom-drivers",
+  "title": "Teach git how to diff and merge your file formats",
+  "category": "merging",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 16,
+  "summary": "A changelog that conflicts every release, a binary that shows as gibberish, a generated file nobody should merge. `.gitattributes` lets you attach a diff driver, a merge driver or a union strategy per path.",
+  "concepts": ["gitattributes merge=", "union merge", "custom merge driver", "textconv diff driver", "binary files", "export-ignore"],
+  "mental_model": "Git's default merge is line-based and format-blind. `.gitattributes` maps a path pattern to a named driver, and config defines what that name does — so behaviour travels with the repository and the implementation stays local.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "CHANGELOG.md", "content": "# Changelog\n\n- initial release\n" } },
+    { "write": { "path": "config.json", "content": "{\n  \"retries\": 3,\n  \"timeout\": 30\n}\n" } },
+    { "write": { "path": "logo.bin", "content": "BINARYv1-aaaa-bbbb\n" } },
+    { "write": { "path": "generated.lock", "content": "resolved-at=2026-01-01\nentries=1\n" } },
+    { "commit": { "message": "Add project files" } }
+  ],
+  "steps": [
+    {
+      "title": "The changelog that conflicts every single time",
+      "why": "Two branches each add a line at the top of the changelog. Line-based merging sees one contested region and stops — even though the correct answer is obviously 'keep both'.",
+      "actions": [
+        { "run": "git switch -q -c feature/alerts" },
+        { "write": { "path": "CHANGELOG.md", "content": "# Changelog\n\n- add temperature alerts\n- initial release\n" } },
+        { "run": "git commit -q -a -m \"Changelog: alerts\"" },
+        { "run": "git switch -q main" },
+        { "write": { "path": "CHANGELOG.md", "content": "# Changelog\n\n- add dosing calibration\n- initial release\n" } },
+        { "run": "git commit -q -a -m \"Changelog: dosing\"" }
+      ],
+      "commands": ["git merge feature/alerts", "git status --short", "cat CHANGELOG.md"],
+      "expect": "A conflict over two lines that do not actually disagree.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "CHANGELOG.md",
+          "label": "the changelog conflicted" }
+      ]
+    },
+    {
+      "title": "Abort and tell git the file is a union",
+      "why": "The built-in `union` driver keeps both sides' lines instead of conflicting. It is exactly right for append-only files — changelogs, allow-lists, contributor lists — and exactly wrong for source code.",
+      "actions": [
+        { "run": "git merge --abort" },
+        { "write": { "path": ".gitattributes", "content": "# Append-only: keep both sides rather than conflicting.\nCHANGELOG.md merge=union\n" } },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Merge changelogs as a union\"" }
+      ],
+      "commands": ["git check-attr merge -- CHANGELOG.md", "git merge feature/alerts", "cat CHANGELOG.md", "git status --short"],
+      "expect": "The merge succeeds and both entries are present.",
+      "verify": [
+        { "cmd": "cat CHANGELOG.md", "contains": ["add temperature alerts", "add dosing calibration"],
+          "label": "both changelog entries survived, with no conflict",
+          "hint": "CHANGELOG.md merge=union in .gitattributes" },
+        { "cmd": "cat CHANGELOG.md", "not_contains": "<<<<<<<",
+          "label": "…and no markers were produced" }
+      ]
+    },
+    {
+      "title": "A binary that git should not try to merge",
+      "why": "Marking a path `binary` is shorthand for `-diff -merge -text`: no diffing, no line-ending conversion, and a conflict you must resolve by choosing a whole file. That is honest — a merged binary would be corrupt.",
+      "actions": [
+        { "run": "git switch -q -c feature/logo" },
+        { "write": { "path": "logo.bin", "content": "BINARYv2-cccc-dddd\n" } },
+        { "run": "git commit -q -a -m \"New logo\"" },
+        { "run": "git switch -q main" },
+        { "write": { "path": "logo.bin", "content": "BINARYv3-eeee-ffff\n" } },
+        { "run": "git commit -q -a -m \"Different new logo\"" },
+        { "write": { "path": ".gitattributes", "content": "# Append-only: keep both sides rather than conflicting.\nCHANGELOG.md merge=union\n\n# Never diff or merge binaries.\n*.bin binary\n" } },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Mark binaries as binary\"" }
+      ],
+      "commands": ["git check-attr diff merge text -- logo.bin", "git merge feature/logo", "git status --short", "sh -c 'git diff --stat HEAD -- logo.bin'"],
+      "expect": "A conflict git refuses to guess at, and a diff that says 'binary files differ' rather than printing bytes.",
+      "verify": [
+        { "cmd": "git check-attr diff -- logo.bin", "matches": "diff: (unset|unspecified)",
+          "label": "diffing is disabled for the binary",
+          "hint": "*.bin binary is shorthand for -diff -merge -text" }
+      ]
+    },
+    {
+      "title": "Resolve a binary the only way you can",
+      "why": "`checkout --ours` or `--theirs` takes one whole file. There is no middle ground, which is why binary assets belong in a review process rather than a merge algorithm.",
+      "commands": ["git checkout --ours logo.bin", "git add logo.bin", "git commit -q --no-edit", "cat logo.bin", "git status --short"],
+      "verify": [
+        { "cmd": "cat logo.bin", "contains": "BINARYv3",
+          "label": "one whole version was chosen",
+          "hint": "git checkout --ours or --theirs, then add" }
+      ]
+    },
+    {
+      "title": "A generated file that should never be merged at all",
+      "why": "A custom driver named in `.gitattributes` and defined in config. `merge.ours.driver true` means 'succeed, keeping our version' — the file is regenerated afterwards, so merging it is wasted effort.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "# Append-only: keep both sides rather than conflicting.\nCHANGELOG.md merge=union\n\n# Never diff or merge binaries.\n*.bin binary\n\n# Generated: keep ours and regenerate; never hand-merge.\n*.lock merge=keep-ours\n\n# Do not ship internal files in release archives.\n/.gitattributes export-ignore\n/docs export-ignore\n" } },
+        { "run": "git config merge.keep-ours.name \"keep our version; the file is regenerated\"" },
+        { "run": "git config merge.keep-ours.driver true" },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Add a keep-ours driver for generated files\"" },
+        { "run": "git switch -q -c feature/lock" },
+        { "write": { "path": "generated.lock", "content": "resolved-at=2026-02-01\nentries=7\n" } },
+        { "run": "git commit -q -a -m \"Regenerate the lock on the branch\"" },
+        { "run": "git switch -q main" },
+        { "write": { "path": "generated.lock", "content": "resolved-at=2026-03-01\nentries=4\n" } },
+        { "run": "git commit -q -a -m \"Regenerate the lock on main\"" }
+      ],
+      "commands": ["git check-attr merge -- generated.lock", "git config --get merge.keep-ours.driver", "git merge --no-edit feature/lock", "cat generated.lock", "git status --short"],
+      "expect": "The merge completes with no conflict, keeping main's version of the lock.",
+      "verify": [
+        { "cmd": "cat generated.lock", "contains": "2026-03-01",
+          "label": "the custom driver kept our version without conflicting",
+          "hint": "*.lock merge=keep-ours plus git config merge.keep-ours.driver true" },
+        { "cmd": "git check-attr merge -- generated.lock", "contains": "keep-ours",
+          "label": "the attribute names the driver" }
+      ]
+    },
+    {
+      "title": "Teach git to read a format it does not understand",
+      "why": "A `textconv` diff driver converts a file to text before diffing. Here it renders the binary's header; in real projects it is `pdftotext`, `exiftool` or a JSON pretty-printer — turning an unreadable diff into a reviewable one.",
+      "actions": [
+        { "write": { "path": ".gitattributes", "content": "CHANGELOG.md merge=union\n\n*.bin diff=binhead\n\n*.lock merge=keep-ours\n\n/.gitattributes export-ignore\n/docs export-ignore\n" } },
+        { "run": "sh -c 'git config diff.binhead.textconv \"head -c 40\"'" },
+        { "run": "git config diff.binhead.binary true" },
+        { "run": "git add .gitattributes" },
+        { "run": "git commit -q -m \"Add a textconv driver for binaries\"" },
+        { "write": { "path": "logo.bin", "content": "BINARYv4-gggg-hhhh\n" } }
+      ],
+      "commands": ["git check-attr diff -- logo.bin", "git diff -- logo.bin", "git config --get diff.binhead.textconv"],
+      "expect": "A readable diff of the converted text, where before you saw 'binary files differ'.",
+      "verify": [
+        { "cmd": "git diff -- logo.bin", "contains": "BINARYv4",
+          "label": "the textconv driver made the binary diffable",
+          "hint": "diff=binhead in .gitattributes, git config diff.binhead.textconv <command>" }
+      ]
+    },
+    {
+      "title": "Keep internal files out of release archives",
+      "why": "`export-ignore` excludes paths from `git archive`. The release tarball ends up without your CI config, docs source or attributes file — a one-line-per-path way to control what ships.",
+      "commands": ["git checkout -- logo.bin", "sh -c 'git archive --format=tar HEAD | tar -t'", "git check-attr export-ignore -- .gitattributes"],
+      "expect": "The archive listing omits .gitattributes.",
+      "verify": [
+        { "cmd": "sh -c 'git archive --format=tar HEAD | tar -t | grep -c gitattributes'",
+          "equals": "0", "allow_failure": true,
+          "label": "internal files are excluded from the release archive",
+          "hint": "/.gitattributes export-ignore" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat CHANGELOG.md", "contains": ["add temperature alerts", "add dosing calibration"],
+      "label": "the union driver merged both changelog entries",
+      "hint": "CHANGELOG.md merge=union" },
+    { "cmd": "cat generated.lock", "contains": "2026-03-01",
+      "label": "the custom keep-ours driver handled the generated file" },
+    { "cmd": "git config --get merge.keep-ours.driver", "equals": "true",
+      "label": "the driver named in .gitattributes is defined in config" },
+    { "cmd": "git diff --stat HEAD -- logo.bin", "empty": true,
+      "label": "the binary conflict was resolved by choosing one whole file" },
+    { "cmd": "git ls-files", "contains": ".gitattributes",
+      "label": "the rules are committed, so they apply to everyone" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`.gitattributes` names a driver; config defines it. The file travels with the repository, the definition does not — document the `git config merge.<name>.driver` line, or the attribute silently falls back to the default merge.",
+    "`merge=union` on source code produces files containing both sides' lines and no conflict marker — code that compiles into nonsense. Use it only for genuinely append-only files.",
+    "A `textconv` driver makes diffs readable but does not make merges possible. Binary merges still require picking a whole side.",
+    "`export-ignore` affects `git archive` only. It does not affect clones, so it is a packaging tool, not a privacy one.",
+    "Attributes are matched like gitignore patterns, last match wins. `git check-attr` is the only reliable way to know which rule applied."
+  ],
+  "cheatsheet": [
+    ["<pattern> merge=union", "keep both sides — append-only files"],
+    ["<pattern> binary", "shorthand for -diff -merge -text"],
+    ["<pattern> merge=<name>", "use a custom merge driver"],
+    ["git config merge.<name>.driver <cmd>", "define what that driver does"],
+    ["<pattern> diff=<name>", "use a custom diff driver"],
+    ["git config diff.<name>.textconv <cmd>", "convert to text before diffing"],
+    ["<pattern> export-ignore", "exclude from git archive"],
+    ["git check-attr <attr> -- <path>", "which rule actually applies"]
+  ]
+}

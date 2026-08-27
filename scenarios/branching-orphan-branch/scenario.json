@@ -1,0 +1,143 @@
+{
+  "id": "branching-orphan-branch",
+  "title": "A branch with no shared history, in the same repository",
+  "category": "branching",
+  "level": "advanced",
+  "order": 7,
+  "duration_min": 12,
+  "summary": "Documentation sites, generated artefacts and legal archives sometimes need to live in the repository without polluting the code history. An orphan branch is a second root — same repository, separate history.",
+  "concepts": ["switch --orphan", "second root commit", "no merge base", "worktree for a docs branch", "publishing a built site"],
+  "mental_model": "`switch --orphan` gives you a branch whose first commit will have no parent. It shares the object database with everything else, but reaches none of it — the same mechanism behind a `gh-pages` branch.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "docs/index.md", "content": "# Reef Controller\n\nSource documentation.\n" } },
+    { "write": { "path": "build-docs.sh", "content": "#!/bin/sh\n# Stand-in for a static site generator.\nout=\"${1:-site}\"\nrm -rf \"$out\"\nmkdir -p \"$out\"\n{\n  echo \"<!doctype html>\"\n  echo \"<title>Reef Controller</title>\"\n  echo \"<h1>Reef Controller</h1>\"\n  sed 's/^# //' docs/index.md | tail -n +2 | sed 's/^/<p>/;s/$/<\\/p>/'\n  echo \"<!-- built from $(git rev-parse --short HEAD) -->\"\n} > \"$out/index.html\"\necho \"built $out/index.html\"\n" } },
+    { "run": "sh -c 'chmod +x build-docs.sh'" },
+    { "write": { "path": ".gitignore", "content": "# generated documentation output — published on the gh-pages branch\nsite/\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add app and documentation source\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add pump control\"" },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "Build the site from the source",
+      "why": "The generated HTML is derived output. Committing it to main would mean every documentation change produces two commits and a diff nobody reads.",
+      "commands": ["sh -c 'sh build-docs.sh site'", "sh -c 'cat site/index.html'", "git status --short"],
+      "expect": "A built site/ directory, currently untracked."
+    },
+    {
+      "title": "Create the orphan branch",
+      "why": "`switch --orphan` moves HEAD to a branch that does not exist yet and stages nothing from the current commit. The index is emptied — that clearing is what makes the next commit a root.",
+      "commands": ["git switch --orphan gh-pages", "git status -sb", "git log --oneline", "ls"],
+      "expect": "On gh-pages with no commits, and the working tree still holding your files as untracked.",
+      "verify": [
+        { "cmd": "git symbolic-ref --short HEAD", "equals": "gh-pages",
+          "label": "you are on the orphan branch (rev-parse cannot resolve HEAD until it has a commit)",
+          "hint": "git switch --orphan gh-pages" }
+      ]
+    },
+    {
+      "title": "Commit only the built output",
+      "why": "Add just the site's files, so the branch contains the published artefact and nothing else. This is what a documentation host serves, and why it must not carry your source tree.",
+      "actions": [
+        { "run": "sh -c 'cp site/index.html ./index.html'" },
+        { "run": "sh -c 'git add index.html'" },
+        { "run": "git commit -q -m \"Publish documentation site\"" }
+      ],
+      "commands": ["git log --oneline", "git ls-files", "sh -c 'git cat-file -p HEAD'"],
+      "expect": "One commit, one file, and NO parent line in the commit object.",
+      "verify": [
+        { "cmd": "git ls-files", "equals": "index.html",
+          "label": "the branch contains only the published artefact" },
+        { "cmd": "sh -c 'git cat-file -p HEAD | grep -c \"^parent\"'", "equals": "0",
+          "allow_failure": true,
+          "label": "its first commit is a root — no parent" }
+      ]
+    },
+    {
+      "title": "Confirm the two histories never meet",
+      "why": "`merge-base` returns nothing, and `git log --all --graph` shows two disconnected trees. That separation is the feature: a documentation rebuild can never conflict with a code change.",
+      "commands": ["sh -c 'git merge-base main gh-pages; echo \"exit: $?\"'", "sh -c 'git rev-list --max-parents=0 --all'", "git log --oneline --graph --all --decorate"],
+      "expect": "No merge base, and two root commits.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --max-parents=0 --all | wc -l'", "equals": "2",
+          "label": "the repository now has two independent roots" }
+      ]
+    },
+    {
+      "title": "Go back and see the branches are unrelated",
+      "why": "main is untouched and has never heard of the site. Switching between them replaces the working tree wholesale, because they share no files at all.",
+      "commands": ["sh -c 'rm -f index.html'", "git switch main", "ls", "git log --oneline", "git ls-files"],
+      "expect": "Your source tree back, with no index.html and no site commits in the log.",
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": "index.html",
+          "label": "main never received the built artefact" }
+      ]
+    },
+    {
+      "title": "Publish updates without switching branches",
+      "why": "A worktree is the right tool here: check the orphan branch out into its own directory and the publish step becomes a build plus a commit, with no branch switching in your main checkout at all.",
+      "actions": [
+        { "run": "sh -c 'git worktree add ../site-worktree gh-pages'" },
+        { "write": { "path": "docs/index.md", "content": "# Reef Controller\n\nSource documentation.\n\nNow covering the dosing module.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the dosing module\"" },
+        { "run": "sh -c 'sh build-docs.sh site && cp site/index.html ../site-worktree/index.html'" },
+        { "cwd": "site-worktree", "run": "git add index.html" },
+        { "cwd": "site-worktree", "run": "git commit -q -m \"Rebuild documentation site\"" }
+      ],
+      "commands": ["git log --oneline", "sh -c 'cd ../site-worktree && git log --oneline'", "sh -c 'cat ../site-worktree/index.html'", "git worktree list"],
+      "expect": "Two commits on gh-pages, three on main, and you never left main.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+          "label": "you stayed on main the whole time" },
+        { "cmd": "git log --oneline gh-pages", "lines": 2,
+          "label": "the site branch was updated from a worktree",
+          "hint": "git worktree add ../site-worktree gh-pages" }
+      ]
+    },
+    {
+      "title": "Publish both branches",
+      "why": "An orphan branch pushes like any other. On a forge, pointing the documentation host at it gives you a published site whose history is completely separate from the code's.",
+      "commands": ["git push -q origin main gh-pages", "sh -c 'cd ../origin.git && git branch'", "sh -c 'cd ../origin.git && git log --oneline gh-pages'", "git worktree remove ../site-worktree", "git worktree list"],
+      "verify": [
+        { "cmd": "git branch", "cwd": "origin", "contains": "gh-pages",
+          "label": "the orphan branch is published" },
+        { "cmd": "sh -c 'git ls-tree -r gh-pages --name-only'", "cwd": "origin", "equals": "index.html",
+          "label": "…containing only the built site" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git rev-list --max-parents=0 --all | wc -l'", "equals": "2",
+      "label": "the repository has two independent roots",
+      "hint": "git switch --orphan gh-pages, then commit" },
+    { "cmd": "sh -c 'git ls-tree -r gh-pages --name-only'", "equals": "index.html",
+      "label": "the orphan branch holds only the published artefact" },
+    { "cmd": "git ls-files", "not_contains": "index.html",
+      "label": "main was never polluted with generated output" },
+    { "cmd": "git log --oneline gh-pages", "lines": 2,
+      "label": "the site was rebuilt and republished from a worktree" },
+    { "cmd": "git branch", "cwd": "origin", "contains": "gh-pages",
+      "label": "both branches are on the server" }
+  ],
+  "pitfalls": [
+    "`git switch --orphan` leaves your previous branch's files in the working tree as untracked. Add only what belongs on the orphan branch, or you will commit the whole source tree onto it.",
+    "The older spelling is `git checkout --orphan`, which does NOT clear the index — you must `git rm -rf .` yourself. The `switch` form is safer.",
+    "Merging an orphan branch into main needs `--allow-unrelated-histories` and is almost always a mistake. They are meant to stay apart.",
+    "Rebuilding a generated site on every commit makes the orphan branch's history enormous. Some teams force-push a single commit to it instead, deliberately discarding its history.",
+    "Use a worktree rather than switching branches to publish. Switching wipes your working tree and any running build."
+  ],
+  "cheatsheet": [
+    ["git switch --orphan <name>", "start a branch with no history"],
+    ["git rev-list --max-parents=0 --all", "count root commits"],
+    ["git merge-base A B", "empty means the branches are unrelated"],
+    ["git worktree add <dir> <branch>", "publish without switching branches"],
+    ["git ls-tree -r <branch> --name-only", "exactly what a branch contains"],
+    ["git push origin <orphan-branch>", "publish it like any other branch"]
+  ]
+}

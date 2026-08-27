@@ -1,0 +1,154 @@
+{
+  "id": "remotes-bundle-offline",
+  "title": "Move commits with no network at all",
+  "category": "remotes",
+  "level": "advanced",
+  "order": 8,
+  "duration_min": 14,
+  "summary": "An air-gapped machine, a locked-down customer site, a flaky VPN. git bundle packages commits into a single file you can carry on a USB stick, and it behaves exactly like a remote.",
+  "concepts": ["git bundle create", "bundle as a remote", "incremental bundles", "bundle verify", "prerequisites", "offline backup"],
+  "mental_model": "A bundle is a packfile plus a list of refs, in one file. Git can clone from it, fetch from it, and list its refs — everything it does with a URL, because a bundle is just a remote that happens to be a file.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "commit": { "message": "Add pump control" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Add dosing" } }
+  ],
+  "steps": [
+    {
+      "title": "Package the whole repository into one file",
+      "why": "`--all` bundles every ref. The result is a single file containing the complete history — a backup you can email, burn to a disc, or carry through a security door.",
+      "actions": [
+        { "run": "sh -c 'git bundle create ../reef-full.bundle --all'" }
+      ],
+      "commands": ["sh -c 'ls -la ../reef-full.bundle'", "sh -c 'git bundle list-heads ../reef-full.bundle'"],
+      "expect": "One file, and a list of the refs inside it including the tag.",
+      "verify": [
+        { "cmd": "sh -c 'git bundle list-heads ../reef-full.bundle | grep -c refs/heads/main'", "equals": "1",
+          "label": "the bundle contains the main branch",
+          "hint": "git bundle create <file> --all" }
+      ]
+    },
+    {
+      "title": "Verify it before trusting it",
+      "why": "`bundle verify` checks the packfile is intact and reports which commits the receiving repository must already have. For a full bundle the answer is none — it is self-contained.",
+      "commands": ["sh -c 'git bundle verify ../reef-full.bundle'"],
+      "expect": "'The bundle records a complete history' — no prerequisites."
+    },
+    {
+      "title": "Clone from the file, as if it were a server",
+      "why": "This is the part that surprises people: a bundle is a valid clone URL. The clone has full history, tags and a working tree, with no network involved at any point.",
+      "commands": ["sh -c 'git clone -q ../reef-full.bundle ../airgapped 2>/dev/null && echo cloned'", "sh -c 'cd ../airgapped && git log --oneline'", "sh -c 'cd ../airgapped && git tag'", "sh -c 'cd ../airgapped && ls'"],
+      "expect": "Three commits, the v1.0 tag, and the files — from a single file.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "airgapped", "lines": 3,
+          "label": "a full clone was made from the bundle file",
+          "hint": "git clone <file>.bundle <dir>" },
+        { "cmd": "git tag", "cwd": "airgapped", "contains": "v1.0",
+          "label": "…tags included" }
+      ]
+    },
+    {
+      "title": "Work happens on both sides",
+      "why": "The two repositories now diverge with no way to talk to each other. Everything below is the offline equivalent of push and pull.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add temperature alerts\"" },
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\nPH_THRESHOLD = 8.6\n" } },
+        { "run": "git commit -q -a -m \"Alert on pH drift too\"" }
+      ],
+      "commands": ["git log --oneline", "sh -c 'cd ../airgapped && git log --oneline'"],
+      "expect": "Five commits here, three there."
+    },
+    {
+      "title": "Bundle only what is new",
+      "why": "A full bundle of a large repository is huge. Naming a range — `v1.0..main` — produces an incremental bundle containing only the new commits, with v1.0 recorded as a prerequisite.",
+      "actions": [
+        { "run": "sh -c 'git bundle create ../reef-update.bundle v1.0..main'" }
+      ],
+      "commands": ["sh -c 'ls -la ../reef-full.bundle ../reef-update.bundle'", "sh -c 'git bundle verify ../reef-update.bundle 2>&1 | head -5'"],
+      "expect": "A much smaller file, and verify reporting that the receiver needs the v1.0 commit already.",
+      "verify": [
+        { "cmd": "sh -c 'test -f ../reef-update.bundle && echo exists'", "contains": "exists",
+          "label": "an incremental bundle was created" }
+      ]
+    },
+    {
+      "title": "Apply the update on the other side",
+      "why": "`git fetch <bundle> <refspec>` treats the file as a remote. Because the airgapped clone already has v1.0, the prerequisite is satisfied and the new commits apply.",
+      "cwd": "airgapped",
+      "commands": ["sh -c 'git bundle verify ../reef-update.bundle 2>&1 | tail -2'", "sh -c 'git fetch ../reef-update.bundle main:refs/remotes/bundle/main'", "git log --oneline bundle/main", "git merge --ff-only bundle/main", "git log --oneline"],
+      "expect": "Five commits on the airgapped side, fetched from a file.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "airgapped", "lines": 5,
+          "label": "the incremental bundle brought the new commits across",
+          "hint": "git fetch <bundle> main:refs/remotes/bundle/main" },
+        { "cmd": "cat alerts.py", "cwd": "airgapped", "contains": "PH_THRESHOLD",
+          "label": "…and the files that came with them" }
+      ]
+    },
+    {
+      "title": "Send work back the same way",
+      "why": "Bundles are symmetric. The isolated machine commits, bundles its range, and the file travels back — a complete two-way workflow with no network on either side.",
+      "actions": [
+        { "cwd": "airgapped", "write": { "path": "site-notes.md", "content": "# Site notes\n\nObserved on the customer's hardware.\n" } },
+        { "cwd": "airgapped", "run": "git add -A" },
+        { "cwd": "airgapped", "run": "git commit -q -m \"Record on-site observations\"" },
+        { "cwd": "airgapped", "run": "sh -c 'git bundle create ../from-site.bundle main~1..main'" }
+      ],
+      "commands": ["sh -c 'git fetch ../from-site.bundle main:refs/remotes/site/main'", "git log --oneline site/main -2", "git merge --ff-only site/main", "git log --oneline", "ls"],
+      "expect": "The site's commit merged back, having travelled as a file.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 6,
+          "label": "the offline machine's work came back the same way" },
+        { "cmd": "git ls-files", "contains": "site-notes.md",
+          "label": "…including its files",
+          "hint": "git bundle create <file> <range>, then fetch from it" }
+      ]
+    },
+    {
+      "title": "Use it as a backup you can actually restore",
+      "why": "One file, verifiable, restorable with `git clone`. Unlike a tarball of the working tree it contains the full history — and unlike a hosted mirror it needs no service to stay alive.",
+      "commands": ["sh -c 'git bundle create ../reef-backup.bundle --all && git bundle verify ../reef-backup.bundle | tail -2'", "sh -c 'git clone -q ../reef-backup.bundle ../restored && cd ../restored && git log --oneline | wc -l'"],
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline | wc -l'", "cwd": "restored", "equals": "6",
+          "label": "the backup bundle restores the complete history",
+          "hint": "git bundle create <file> --all" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 6,
+      "label": "work travelled both ways with no network",
+      "hint": "bundle a range, fetch from the file, merge" },
+    { "cmd": "git ls-files", "contains": ["alerts.py", "site-notes.md"],
+      "label": "both sides' files are present" },
+    { "cmd": "git log --oneline", "cwd": "airgapped", "lines": 6,
+      "label": "the offline clone received the update bundle" },
+    { "cmd": "sh -c 'git log --oneline | wc -l'", "cwd": "restored", "equals": "6",
+      "label": "a full-backup bundle restores everything" },
+    { "cmd": "git tag", "cwd": "restored", "contains": "v1.0",
+      "label": "…tags included" }
+  ],
+  "pitfalls": [
+    "An incremental bundle records prerequisites. If the receiving repository lacks them, the fetch fails — `git bundle verify` tells you before you carry the file across the building.",
+    "`git bundle create <file> --all` bundles every ref including remote-tracking ones. Use explicit refs when you want a tidy handover.",
+    "A bundle is a snapshot. Nothing updates it, so a bundle used as a backup is only as fresh as the day you made it.",
+    "Cloning from a bundle sets the bundle file as `origin`. Repoint the remote afterwards, or the first `git fetch` looks for a file that has been deleted.",
+    "Bundles are not encrypted or signed. Anything sensitive needs handling at the file level."
+  ],
+  "cheatsheet": [
+    ["git bundle create <file> --all", "the whole repository in one file"],
+    ["git bundle create <file> <range>", "an incremental bundle"],
+    ["git bundle verify <file>", "integrity plus required prerequisites"],
+    ["git bundle list-heads <file>", "which refs are inside"],
+    ["git clone <file> <dir>", "clone from a bundle"],
+    ["git fetch <file> <ref>:<local-ref>", "fetch from one as if it were a remote"],
+    ["git remote set-url origin <real-url>", "repoint after cloning from a bundle"]
+  ]
+}

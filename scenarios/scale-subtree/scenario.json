@@ -1,0 +1,153 @@
+{
+  "id": "scale-subtree",
+  "title": "Vendor a library with subtree instead of submodules",
+  "category": "scale",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 16,
+  "summary": "Subtree puts the library's files and history directly into your repository, so a plain clone just works. Add one, pull an upstream update, and push a fix back.",
+  "concepts": ["git subtree add", "--squash", "subtree pull", "subtree push", "no extra clone step", "history duplication"],
+  "mental_model": "A submodule stores a pointer; a subtree stores the files. With subtree, `git clone` gives you everything and nobody has to know the library is vendored — at the cost of the library's commits living in your history.",
+  "setup": [
+    { "run": "git init -q -b main ../sensors-lib" },
+    { "cwd": "sensors-lib", "write": { "path": "reader.py", "content": "def read_ph():\n    return 8.1\n" } },
+    { "cwd": "sensors-lib", "run": "git add -A" },
+    { "cwd": "sensors-lib", "run": "git commit -q -m \"sensors: add pH reading\"" },
+    { "cwd": "sensors-lib", "write": { "path": "README.md", "content": "# Sensors\n" } },
+    { "cwd": "sensors-lib", "run": "git add -A" },
+    { "cwd": "sensors-lib", "run": "git commit -q -m \"sensors: add readme\"" },
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Add the library as a subtree",
+      "why": "`subtree add --prefix` fetches the other repository and grafts its tree under that directory. `--squash` collapses its history into one commit, which keeps your log readable — without it you inherit every commit the library ever had.",
+      "actions": [
+        { "run": "sh -c 'git remote add sensors ../sensors-lib'" },
+        { "run": "sh -c 'git fetch -q sensors'" },
+        { "run": "sh -c 'git subtree add --prefix=vendor/sensors sensors main --squash'" }
+      ],
+      "commands": ["git log --oneline", "ls vendor/sensors", "cat vendor/sensors/reader.py"],
+      "expect": "The library's files under vendor/sensors, and two new commits describing the graft.",
+      "verify": [
+        { "cmd": "git ls-files", "contains": "vendor/sensors/reader.py",
+          "label": "the library's files are tracked in this repository",
+          "hint": "git subtree add --prefix=vendor/sensors <remote> main --squash" }
+      ]
+    },
+    {
+      "title": "See the difference from a submodule",
+      "why": "There is no `.gitmodules`, no gitlink, no special index entry — just ordinary files in an ordinary tree. That is the whole selling point: consumers need no extra commands.",
+      "commands": ["git ls-tree HEAD vendor", "sh -c 'ls -a | grep gitmodules || echo \"no .gitmodules — nothing to initialise\"'", "git ls-files -s vendor/sensors"],
+      "expect": "Mode 040000 for a normal tree, and 100644 files inside it.",
+      "verify": [
+        { "cmd": "sh -c 'ls -a | grep gitmodules | wc -l'", "equals": "0",
+          "label": "no submodule machinery is involved" },
+        { "cmd": "git ls-files -s vendor/sensors", "not_contains": "160000",
+          "label": "…and no gitlink entry either" }
+      ]
+    },
+    {
+      "title": "Prove a plain clone just works",
+      "why": "This is the payoff. A colleague clones and has the library immediately — no `--recurse-submodules`, no empty directory, no support question.",
+      "commands": ["sh -c 'git clone -q \"$(pwd)\" ../consumer'", "sh -c 'ls ../consumer/vendor/sensors'", "sh -c 'cat ../consumer/vendor/sensors/reader.py'"],
+      "expect": "The library present in a fresh clone with no extra steps.",
+      "verify": [
+        { "cmd": "cat vendor/sensors/reader.py", "cwd": "consumer", "contains": "read_ph",
+          "label": "a plain clone contains the vendored library",
+          "hint": "this is the submodule problem that subtree does not have" }
+      ]
+    },
+    {
+      "title": "Upstream releases a change",
+      "why": "The library moves on independently. Your repository knows nothing about it yet — subtree is a copy, so updates are a deliberate act, exactly like a dependency bump.",
+      "actions": [
+        { "cwd": "sensors-lib", "write": { "path": "reader.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n" } },
+        { "cwd": "sensors-lib", "run": "git add -A" },
+        { "cwd": "sensors-lib", "run": "git commit -q -m \"sensors: add temperature reading\"" }
+      ],
+      "commands": ["cat vendor/sensors/reader.py", "sh -c 'cd ../sensors-lib && git log --oneline'"],
+      "expect": "The upstream has three commits; your copy still has the old file."
+    },
+    {
+      "title": "Pull the update in",
+      "why": "`subtree pull` fetches and merges the library's new commits under the prefix. With `--squash` it lands as a single readable commit rather than replaying the library's own history into yours.",
+      "actions": [
+        { "run": "sh -c 'git subtree pull --prefix=vendor/sensors sensors main --squash -m \"Update vendored sensors library\"'" }
+      ],
+      "commands": ["cat vendor/sensors/reader.py", "git log --oneline -3", "git show --stat HEAD"],
+      "expect": "read_temp appears, in a commit that says what it is.",
+      "verify": [
+        { "cmd": "cat vendor/sensors/reader.py", "contains": "read_temp",
+          "label": "the upstream update was pulled in",
+          "hint": "git subtree pull --prefix=<dir> <remote> main --squash" }
+      ]
+    },
+    {
+      "title": "Fix a bug in the vendored copy",
+      "why": "You can edit vendored files directly — they are just files. Commit it in your repository as normal; nothing special happens until you decide to send it upstream.",
+      "actions": [
+        { "write": { "path": "vendor/sensors/reader.py", "content": "def read_ph():\n    return 8.1\n\n\ndef read_temp():\n    return 26.4\n\n\ndef read_salinity():\n    \"\"\"Added downstream, to be contributed back.\"\"\"\n    return 1.025\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"sensors: add salinity reading\"" }
+      ],
+      "commands": ["git log --oneline -2", "git show --stat HEAD", "cat vendor/sensors/reader.py"],
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": "vendor/sensors/reader.py",
+          "label": "the fix is an ordinary commit in your repository" }
+      ]
+    },
+    {
+      "title": "Send it back upstream",
+      "why": "`subtree push` extracts the commits that touched the prefix, rewrites their paths to the library's root, and pushes them to the other repository. This is the part submodules make easy and subtree makes possible-but-fiddly.",
+      "actions": [
+        { "run": "sh -c 'git subtree push --prefix=vendor/sensors sensors contributed-salinity'" }
+      ],
+      "commands": ["sh -c 'cd ../sensors-lib && git log --oneline contributed-salinity'", "sh -c 'cd ../sensors-lib && git show contributed-salinity:reader.py'"],
+      "expect": "A branch in the library containing your change, with the vendor/ prefix stripped.",
+      "verify": [
+        { "cmd": "sh -c 'git show contributed-salinity:reader.py'", "cwd": "sensors-lib",
+          "contains": "read_salinity",
+          "label": "the downstream fix reached the library, path-rewritten",
+          "hint": "git subtree push --prefix=<dir> <remote> <branch>" }
+      ]
+    },
+    {
+      "title": "Weigh it against submodules",
+      "why": "Subtree: clones just work, no extra commands, but your history carries the library and updates are manual. Submodule: exact pinning and no history bloat, but every clone needs an extra step and detached HEADs bite people. Neither is wrong — pick per repository.",
+      "commands": ["git log --oneline", "git count-objects -vH", "git ls-files | head -6"],
+      "expect": "Nothing to run; this step is the trade-off summary."
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-files", "contains": "vendor/sensors/reader.py",
+      "label": "the library is vendored as ordinary tracked files",
+      "hint": "git subtree add --prefix=vendor/sensors <remote> main --squash" },
+    { "cmd": "cat vendor/sensors/reader.py", "contains": ["read_temp", "read_salinity"],
+      "label": "the upstream update and your own fix are both present" },
+    { "cmd": "sh -c 'ls -a | grep gitmodules | wc -l'", "equals": "0",
+      "label": "no submodule machinery — a plain clone is enough" },
+    { "cmd": "cat vendor/sensors/reader.py", "cwd": "consumer", "contains": "read_ph",
+      "label": "a fresh clone got the library with no extra commands" },
+    { "cmd": "sh -c 'git show contributed-salinity:reader.py'", "cwd": "sensors-lib",
+      "contains": "read_salinity",
+      "label": "the downstream fix was contributed back upstream" }
+  ],
+  "pitfalls": [
+    "Without `--squash` the library's entire history is replayed into yours, and `git log` becomes unreadable. Use it unless you specifically want the detail.",
+    "`git subtree pull` must be run from the repository root, and the prefix must match exactly what you used for `add`. A typo silently creates a second copy.",
+    "`subtree push` walks every commit touching the prefix and can be very slow on a large history. `git subtree split --rejoin` speeds up later pushes.",
+    "Editing vendored files locally means diverging from upstream. Contribute the fix back, or record why you cannot — a forked vendored copy nobody remembers is a maintenance trap.",
+    "`git subtree` ships with git but is a contrib script; on some distributions it needs a separate package."
+  ],
+  "cheatsheet": [
+    ["git subtree add --prefix=<dir> <remote> <branch> --squash", "vendor a repository"],
+    ["git subtree pull --prefix=<dir> <remote> <branch> --squash", "update it"],
+    ["git subtree push --prefix=<dir> <remote> <branch>", "send local changes upstream"],
+    ["git subtree split --prefix=<dir> -b <branch>", "extract the prefix's history as a branch"],
+    ["git ls-files -s <dir>", "confirm normal files, not a 160000 gitlink"],
+    ["git log --oneline -- <dir>", "what has changed in the vendored copy"]
+  ]
+}

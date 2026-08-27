@@ -1,0 +1,146 @@
+{
+  "id": "setup-conditional-identity",
+  "title": "Work email in work repos, personal email everywhere else — automatically",
+  "category": "setup",
+  "level": "intermediate",
+  "order": 7,
+  "duration_min": 12,
+  "summary": "Setting the right identity per repository works right up until you forget once. Conditional includes make git choose by directory, so the wrong email becomes impossible rather than unlikely.",
+  "concepts": ["includeIf gitdir", "config file includes", "hasconfig:remote.*.url", "per-directory identity", "useConfigOnly"],
+  "mental_model": "`[includeIf \"gitdir:~/work/\"]` pulls in another config file when the repository lives under that path. It is evaluated per repository, at read time, so the identity follows the directory rather than your memory.",
+  "setup": [
+    { "run": "sh -c 'mkdir -p work/service personal/sideproject'" },
+    { "cwd": "repo/work/service", "run": "git init -q -b main" },
+    { "cwd": "repo/work/service", "write": { "path": "service.py", "content": "print('work service')\n" } },
+    { "cwd": "repo/personal/sideproject", "run": "git init -q -b main" },
+    { "cwd": "repo/personal/sideproject", "write": { "path": "hobby.py", "content": "print('side project')\n" } },
+    { "run": "git init -q -b main" },
+    { "run": "git config --global user.name \"Personal Name\"" },
+    { "run": "git config --global user.email \"me@personal.example\"" }
+  ],
+  "steps": [
+    {
+      "title": "One identity for everything",
+      "why": "Both repositories resolve to the global identity, because nothing distinguishes them. Commit in the work repository now and it carries your personal email — permanently, in the commit object.",
+      "commands": ["sh -c 'cd work/service && git config --get user.email'", "sh -c 'cd personal/sideproject && git config --get user.email'"],
+      "expect": "The same personal email in both.",
+      "verify": [
+        { "cmd": "git config --get user.email", "cwd": "repo/work/service",
+          "equals": "me@personal.example",
+          "label": "the work repository is currently using the personal identity" }
+      ]
+    },
+    {
+      "title": "Write the work identity into its own file",
+      "why": "A separate config file holds everything work-specific: identity, signing key, whatever else differs. Keeping it separate is what makes the include readable a year later.",
+      "actions": [
+        { "write": { "path": "gitconfig-work", "content": "[user]\n\tname = Work Name\n\temail = you@company.example\n[commit]\n\tgpgsign = false\n" } }
+      ],
+      "commands": ["cat gitconfig-work"],
+      "expect": "A small file with just the work-specific settings."
+    },
+    {
+      "title": "Include it conditionally",
+      "why": "`includeIf gitdir:` matches on the repository's path. The trailing slash matters — it means 'this directory and everything under it'. A pattern that does not start with `~/`, `./` or `/` gets `**/` prepended, so `gitdir:work/` matches any repository under a directory called work — which is also the only form that behaves identically on Windows and Unix. In your own dotfiles you would normally write the absolute `gitdir:~/work/`.",
+      "actions": [
+        { "run": "sh -c 'printf \"[includeIf \\\"gitdir:work/\\\"]\\n\\tpath = ../repo/gitconfig-work\\n\" >> \"$HOME/.gitconfig\"'" }
+      ],
+      "commands": ["sh -c 'tail -4 \"$HOME/.gitconfig\"'", "sh -c 'cd work/service && git config --get user.email'", "sh -c 'cd personal/sideproject && git config --get user.email'"],
+      "expect": "The work repository now resolves to the company email; the personal one is unchanged.",
+      "verify": [
+        { "cmd": "git config --get user.email", "cwd": "repo/work/service",
+          "equals": "you@company.example",
+          "label": "the work repository picked up the work identity automatically",
+          "hint": "[includeIf \"gitdir:<path>/work/\"] with a path = line" },
+        { "cmd": "git config --get user.email", "cwd": "repo/personal/sideproject",
+          "equals": "me@personal.example",
+          "label": "…and the personal one was left alone" }
+      ]
+    },
+    {
+      "title": "Prove it at commit time",
+      "why": "Config resolution is not a display trick — the identity is baked into the commit. Commit in each repository and read the author back.",
+      "actions": [
+        { "cwd": "repo/work/service", "run": "git add -A" },
+        { "cwd": "repo/work/service", "run": "git commit -q -m \"Add the service\"" },
+        { "cwd": "repo/personal/sideproject", "run": "git add -A" },
+        { "cwd": "repo/personal/sideproject", "run": "git commit -q -m \"Add the side project\"" }
+      ],
+      "commands": ["sh -c 'cd work/service && git log -1 --format=\"%an <%ae>\"'", "sh -c 'cd personal/sideproject && git log -1 --format=\"%an <%ae>\"'"],
+      "expect": "Two commits, two identities, no thinking required.",
+      "verify": [
+        { "cmd": "git log -1 --format=%ae", "cwd": "repo/work/service",
+          "equals": "you@company.example",
+          "label": "the work commit carries the work email" },
+        { "cmd": "git log -1 --format=%ae", "cwd": "repo/personal/sideproject",
+          "equals": "me@personal.example",
+          "label": "the personal commit carries the personal email" }
+      ]
+    },
+    {
+      "title": "See where each value came from",
+      "why": "`--show-origin` names the file behind every value, including included ones. When an identity is not what you expect, this ends the investigation in one command.",
+      "commands": ["sh -c 'cd work/service && git config --list --show-origin --show-scope | grep user'", "sh -c 'cd personal/sideproject && git config --list --show-origin --show-scope | grep user'"],
+      "expect": "The work repository citing gitconfig-work; the personal one citing the global file."
+    },
+    {
+      "title": "Match on the remote instead of the path",
+      "why": "`hasconfig:remote.*.url` matches on where the repository points rather than where it sits — the right condition when work repositories are scattered across your disk. It needs git 2.36 or newer.",
+      "actions": [
+        { "write": { "path": "gitconfig-forge", "content": "[user]\n\temail = you@company.example\n[core]\n\tsshCommand = ssh -i ~/.ssh/work_key\n" } },
+        { "run": "sh -c 'printf \"[includeIf \\\"hasconfig:remote.*.url:git@git.company.example:**\\\"]\\n\\tpath = ../repo/gitconfig-forge\\n\" >> \"$HOME/.gitconfig\"'" }
+      ],
+      "commands": ["sh -c 'tail -8 \"$HOME/.gitconfig\"'", "sh -c 'cd personal/sideproject && git config --get user.email'"],
+      "expect": "The condition is recorded; the personal repository is unaffected because its remote does not match.",
+      "verify": [
+        { "cmd": "sh -c 'grep -c hasconfig \"$HOME/.gitconfig\"'", "equals": "1",
+          "label": "a remote-based condition is configured",
+          "hint": "[includeIf \"hasconfig:remote.*.url:...\"]" }
+      ]
+    },
+    {
+      "title": "Close the last gap",
+      "why": "Conditional includes only help inside the directories you configured. `user.useConfigOnly true` makes git refuse to commit anywhere it has no configured identity, instead of inventing one from your hostname — the two settings together make a wrong email genuinely impossible.",
+      "actions": [
+        { "run": "git config --global user.useConfigOnly true" },
+        { "run": "sh -c 'git config --global --unset user.email || true'" }
+      ],
+      "commands": ["sh -c 'cd work/service && git config --get user.email'", "sh -c 'cd personal/sideproject && git config --get user.email || echo \"no identity — git will refuse to commit here\"'", "git config --global --get user.useConfigOnly"],
+      "expect": "The work repository still resolves; the personal one now has no identity at all, and git will say so rather than guess.",
+      "verify": [
+        { "cmd": "git config --global --get user.useConfigOnly", "equals": "true",
+          "label": "git will refuse to guess an identity" },
+        { "cmd": "git config --get user.email", "cwd": "repo/work/service",
+          "equals": "you@company.example",
+          "label": "the conditional include still supplies the work identity" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log -1 --format=%ae", "cwd": "repo/work/service", "equals": "you@company.example",
+      "label": "the work repository commits with the work identity",
+      "hint": "[includeIf \"gitdir:<path>/work/\"] pointing at a work config file" },
+    { "cmd": "git log -1 --format=%ae", "cwd": "repo/personal/sideproject",
+      "equals": "me@personal.example",
+      "label": "the personal repository commits with the personal identity" },
+    { "cmd": "sh -c 'grep -c includeIf \"$HOME/.gitconfig\"'", "equals": "2",
+      "label": "both a path-based and a remote-based condition are configured" },
+    { "cmd": "git config --global --get user.useConfigOnly", "equals": "true",
+      "label": "git refuses to invent an identity where none is configured" }
+  ],
+  "pitfalls": [
+    "The trailing slash in `gitdir:~/work/` matters: without it the pattern matches the directory itself and not repositories inside it.",
+    "`gitdir` is case-sensitive on Unix. Use `gitdir/i:` when the path's case varies, which it does on Windows and macOS.",
+    "Conditional includes apply to the repository's own path, not your current directory. A worktree elsewhere on disk resolves against the worktree's location.",
+    "The include only fires when git reads config for that repository — a repository you clone outside the configured directory silently gets the global identity.",
+    "`user.useConfigOnly true` is the safety net that turns 'wrong email' into an error message. Set it once and forget it."
+  ],
+  "cheatsheet": [
+    ["[includeIf \"gitdir:~/work/\"]", "match repositories under a path"],
+    ["path = ~/.gitconfig-work", "the file to pull in when it matches"],
+    ["[includeIf \"gitdir/i:~/Work/\"]", "case-insensitive match"],
+    ["[includeIf \"hasconfig:remote.*.url:git@host:**\"]", "match by remote instead of path"],
+    ["git config --list --show-origin --show-scope", "which file every value came from"],
+    ["git config --global user.useConfigOnly true", "refuse to guess an identity"]
+  ]
+}
