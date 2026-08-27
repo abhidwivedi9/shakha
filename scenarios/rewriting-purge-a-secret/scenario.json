@@ -13,7 +13,7 @@
     { "run": "git init -q -b main" },
     { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
     { "commit": { "message": "Initial commit" } },
-    { "write": { "path": "config/secrets.env", "content": "DB_PASSWORD=hunter2-production\nSTRIPE_KEY=sk_live_51H8xample\n" } },
+    { "write": { "path": "config/secrets.env", "content": "DB_PASSWORD=hunter2-production\nSTRIPE_KEY=sk_live_EXAMPLE_NOT_A_REAL_KEY\n" } },
     { "write": { "path": "config/app.env", "content": "LOG_LEVEL=info\n" } },
     { "run": "git add -A" },
     { "run": "git commit -q -m \"Add environment configuration\"" },
