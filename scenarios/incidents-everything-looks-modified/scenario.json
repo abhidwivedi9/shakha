@@ -31,8 +31,8 @@
       "verify": [
         { "cmd": "git diff --cached --summary", "contains": "mode change",
           "label": "the modification is a mode change, not content" },
-        { "cmd": "git diff --cached --numstat", "empty": true,
-          "label": "…and not a single line of content changed",
+        { "cmd": "git diff --cached --numstat", "matches": "^0\\s+0\\s",
+          "label": "…and numstat reports zero lines added and zero removed",
           "hint": "the diff header shows old mode / new mode and nothing else" }
       ]
     },
