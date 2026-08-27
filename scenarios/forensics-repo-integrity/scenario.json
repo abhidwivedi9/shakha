@@ -1,0 +1,128 @@
+{
+  "id": "forensics-repo-integrity",
+  "title": "\"fatal: bad object\" — repairing a damaged repository",
+  "category": "forensics",
+  "level": "expert",
+  "order": 4,
+  "duration_min": 16,
+  "summary": "Corrupt the index, then a loose object, and repair both. Learn which parts of .git are disposable, which are precious, and how content-addressing makes most damage detectable.",
+  "concepts": ["git fsck", "corrupt index", "loose objects", "content addressing", "recovering from a clone", "gc and packfiles"],
+  "mental_model": "Every object's filename is the hash of its content, so any corruption is detectable — git recomputes the hash and complains. The index, the reflog and packfiles are caches that can be rebuilt; the objects and refs are the only irreplaceable parts.",
+  "danger": "Never delete files under .git/objects to 'clean up'. Every one of them is content that nothing else can reproduce.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "pump.py", "content": "RPM = 1200\n" } },
+    { "commit": { "message": "Add controller" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+    { "commit": { "message": "Add alerts" } }
+  ],
+  "steps": [
+    {
+      "title": "Check the repository is healthy first",
+      "why": "`fsck` verifies that every object's content still hashes to its name and that every ref points at something real. Run it before you believe any diagnosis.",
+      "commands": ["git fsck --full", "git count-objects -vH", "git log --oneline"],
+      "expect": "No output from fsck beyond progress — silence means healthy."
+    },
+    {
+      "title": "Destroy the index",
+      "why": "`.git/index` is a cache of the staging area. Corrupting it breaks `status` and `add` immediately, which looks catastrophic and is not.",
+      "actions": [
+        { "run": "sh -c 'printf \"this is not an index\" > .git/index'" }
+      ],
+      "commands": ["git status --short", "sh -c 'git status; echo exit: $?'"],
+      "expect": "fatal: index file smaller than expected, or a similar refusal."
+    },
+    {
+      "title": "Rebuild it from HEAD",
+      "why": "Deleting the index and running `git reset` regenerates it from the commit. You lose only what was staged and uncommitted — everything else was never in the index to begin with.",
+      "commands": ["sh -c 'rm -f .git/index'", "git reset -q", "git status --short", "git log --oneline"],
+      "expect": "Status works again, tree clean, history untouched.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true,
+          "label": "the index was rebuilt from HEAD",
+          "hint": "rm .git/index && git reset" }
+      ]
+    },
+    {
+      "title": "Now corrupt a real object",
+      "why": "Loose objects live at `.git/objects/ab/cdef...`. Overwriting one breaks the content-addressing invariant — and because the filename IS the hash, git can prove something is wrong rather than silently serving bad data.",
+      "actions": [
+        { "run": "sh -c 'sha=$(git rev-parse HEAD~1); dir=.git/objects/${sha%${sha#??}}; file=.git/objects/${sha:0:2}/${sha:2}; chmod u+w \"$file\" 2>/dev/null; printf \"corrupted\" > \"$file\"; echo damaged $file'" }
+      ],
+      "commands": ["sh -c 'git fsck --full 2>&1 | head -5'", "sh -c 'git log --oneline 2>&1 | head -3'"],
+      "expect": "fsck reports a corrupt or invalid object, naming the sha.",
+      "verify": [
+        { "cmd": "sh -c 'git fsck --full 2>&1 | grep -ci \"error\\|corrupt\"'", "not_empty": true,
+          "allow_failure": true,
+          "label": "fsck detected the damaged object" }
+      ]
+    },
+    {
+      "title": "Fetch the missing object back from a clone",
+      "why": "Git is distributed, which is a backup strategy as well as a workflow. Any clone has the same objects under the same names, so copying one back repairs the damage exactly.",
+      "actions": [
+        { "run": "sh -c 'sha=$(git rev-parse HEAD~1 2>/dev/null || echo \"\"); echo repairing from origin'" },
+        { "run": "sh -c 'git fetch -q origin \"+refs/heads/*:refs/remotes/origin/*\" 2>/dev/null; true'" },
+        { "run": "sh -c 'cd ../origin.git && git cat-file -p HEAD >/dev/null && echo origin healthy'" }
+      ],
+      "commands": ["sh -c 'cd ../origin.git && git fsck --full && echo \"origin is intact\"'", "sh -c 'cd ../origin.git && git log --oneline'"],
+      "expect": "The origin repository is undamaged and has the object you lost."
+    },
+    {
+      "title": "Repair by re-cloning and moving your work across",
+      "why": "For a single missing object you can copy the file from another clone. When several are damaged, the honest fix is a fresh clone plus re-applying whatever was only local — which is why 'commit and push often' is a durability practice, not just a collaboration one.",
+      "actions": [
+        { "run": "sh -c 'git clone -q \"file://$(cd ../origin.git && pwd)\" ../repaired'" }
+      ],
+      "commands": ["sh -c 'cd ../repaired && git fsck --full && echo repaired-clone-is-clean'", "sh -c 'cd ../repaired && git log --oneline'", "sh -c 'cd ../repaired && ls'"],
+      "expect": "A healthy repository containing everything that was pushed.",
+      "verify": [
+        { "cmd": "git fsck --full", "cwd": "repaired", "empty": true,
+          "label": "the fresh clone is intact" },
+        { "cmd": "git log --oneline", "cwd": "repaired", "lines": 2,
+          "label": "…and contains everything that had been pushed" }
+      ]
+    },
+    {
+      "title": "Notice exactly what was lost",
+      "why": "The 'Add alerts' commit was never pushed, so no clone has it. That is the real lesson of this scenario: the only work at risk from local corruption is the work that exists in exactly one place.",
+      "cwd": "repaired",
+      "commands": ["git log --oneline", "ls", "git count-objects -vH"],
+      "expect": "Two commits — the unpushed third is gone with the damaged repository.",
+      "verify": [
+        { "cmd": "git log --oneline", "cwd": "repaired", "not_contains": "Add alerts",
+          "label": "the unpushed commit could not be recovered from anywhere else" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git fsck --full", "cwd": "repaired", "empty": true,
+      "label": "you ended with a healthy repository",
+      "hint": "re-clone from a remote that still has the objects" },
+    { "cmd": "git log --oneline", "cwd": "repaired", "lines": 2,
+      "label": "everything that had been pushed was recovered" },
+    { "cmd": "git log --oneline", "cwd": "repaired", "not_contains": "Add alerts",
+      "label": "the unpushed commit was genuinely lost — the point of the exercise" },
+    { "cmd": "git fsck --full", "cwd": "origin", "empty": true,
+      "label": "the origin repository was never damaged" }
+  ],
+  "pitfalls": [
+    "The index, reflogs and packfiles are caches. `.git/objects` and `.git/refs` are not — never delete anything there.",
+    "`rm .git/index && git reset` fixes almost every 'index is corrupt' error, and costs you only staged-but-uncommitted work.",
+    "A corrupt object in a packfile is harder: `git unpack-objects` from a healthy clone's pack, or just re-clone.",
+    "`git fsck --full` on a huge repository is slow but reads everything. Run it before concluding a repository is fine.",
+    "Work that exists only on your laptop has no backup. Pushing a branch — even a scruffy one — is the cheapest durability you will ever get."
+  ],
+  "cheatsheet": [
+    ["git fsck --full", "verify every object and ref"],
+    ["rm .git/index && git reset", "rebuild a corrupt index"],
+    ["git cat-file -t <sha>", "does this object still read"],
+    ["git count-objects -vH", "loose objects, packs, sizes"],
+    ["git gc", "pack loose objects, prune unreachable ones"],
+    ["git clone <remote>", "the most reliable repair of all"]
+  ]
+}

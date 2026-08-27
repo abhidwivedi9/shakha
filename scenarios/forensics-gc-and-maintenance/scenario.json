@@ -1,0 +1,116 @@
+{
+  "id": "forensics-gc-and-maintenance",
+  "title": "Why git got slow, and what gc actually does",
+  "category": "forensics",
+  "level": "advanced",
+  "order": 5,
+  "duration_min": 12,
+  "summary": "Loose objects pile up, refs multiply, and everyday commands crawl. Watch garbage collection pack thousands of objects into one file, and see exactly which of your commits it would delete.",
+  "concepts": ["loose vs packed objects", "gc", "prune expiry", "packed-refs", "repack", "git maintenance"],
+  "mental_model": "Every write creates a loose object — one small file. gc bundles them into a packfile with delta compression, packs the refs into one file, and deletes unreachable objects older than the expiry. Fewer, bigger files means faster everything.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v0')\n" } },
+    { "commit": { "message": "Initial commit" } }
+  ],
+  "steps": [
+    {
+      "title": "Generate a lot of loose objects",
+      "why": "Thirty commits, each writing a commit, a tree and a blob. In a real repository this is a fortnight of work — and every one of those objects is a separate file on disk.",
+      "actions": [
+        { "run": "sh -c 'for i in $(seq 1 30); do printf \"print(%d)\\n\" $i > app.py; git add app.py; git commit -q -m \"Change $i\"; done'" }
+      ],
+      "commands": ["git count-objects -vH", "sh -c 'find .git/objects -type f | wc -l'"],
+      "expect": "Roughly ninety loose object files.",
+      "verify": [
+        { "cmd": "sh -c 'git count-objects | cut -d\" \" -f1'", "not_empty": true,
+          "label": "the repository has loose objects" }
+      ]
+    },
+    {
+      "title": "Add branches that are going away",
+      "why": "Branch tips keep commits reachable. Deleting the branches makes those commits unreachable — the population gc is designed to consider deleting.",
+      "actions": [
+        { "run": "sh -c 'for name in alpha beta gamma; do git switch -q -c experiment/$name; printf \"experiment %s\\n\" $name > exp.py; git add exp.py; git commit -q -m \"Experiment $name\"; git switch -q main; done'" }
+      ],
+      "commands": ["git branch", "sh -c 'ls .git/refs/heads'", "git count-objects -vH"],
+      "expect": "Four branches, each a separate small file under .git/refs/heads."
+    },
+    {
+      "title": "Delete them and see what becomes unreachable",
+      "why": "The commits still exist and are still reachable through the reflog. `--no-reflogs` asks the harder question: what would be unreachable if the reflog expired?",
+      "actions": [
+        { "run": "sh -c 'git branch -D experiment/alpha experiment/beta experiment/gamma'" }
+      ],
+      "commands": ["sh -c 'git fsck --unreachable --no-reflogs | head -5'", "git log --oneline --all | head -3"],
+      "expect": "Three unreachable commits listed."
+    },
+    {
+      "title": "Run garbage collection",
+      "why": "gc packs the loose objects into a packfile, packs the refs into `.git/packed-refs`, and prunes unreachable objects older than the expiry — two weeks by default, which is why nothing disappears here.",
+      "commands": ["git gc --quiet", "git count-objects -vH", "sh -c 'find .git/objects -type f -name \"*.pack\" | wc -l'", "sh -c 'ls .git/refs/heads 2>/dev/null | wc -l'", "sh -c 'cat .git/packed-refs 2>/dev/null | head -3'"],
+      "expect": "Loose count near zero, one packfile, and refs moved into packed-refs.",
+      "verify": [
+        { "cmd": "sh -c 'find .git/objects -name \"*.pack\" | wc -l'", "not_empty": true,
+          "label": "objects were packed", "hint": "git gc" }
+      ]
+    },
+    {
+      "title": "The experiments survived",
+      "why": "gc's default prune expiry protects anything younger than two weeks, precisely so a mistaken branch deletion stays recoverable. This is why `gc` is safe to run and `gc --prune=now` is not.",
+      "commands": ["sh -c 'git fsck --unreachable --no-reflogs | head -5'", "sh -c 'git log -g --oneline | head -5'"],
+      "expect": "The experiment commits are still there."
+    },
+    {
+      "title": "Now prune for real",
+      "why": "`--prune=now` ignores the expiry and deletes every unreachable object immediately. This is the command that makes the reflog rescue impossible — run it only when you are certain, such as after purging a secret.",
+      "commands": ["git reflog expire --expire=now --all", "git gc --prune=now --quiet", "sh -c 'git fsck --unreachable --no-reflogs | wc -l'", "git count-objects -vH"],
+      "expect": "Zero unreachable objects — the experiments are genuinely gone.",
+      "verify": [
+        { "cmd": "sh -c 'git fsck --unreachable --no-reflogs | wc -l'", "equals": "0",
+          "label": "unreachable objects were deleted",
+          "hint": "git reflog expire --expire=now --all && git gc --prune=now" },
+        { "cmd": "git log --oneline main", "lines": 31,
+          "label": "…while everything reachable is untouched" }
+      ]
+    },
+    {
+      "title": "Schedule maintenance instead of remembering",
+      "why": "`git maintenance` runs the same work incrementally in the background — packing, prefetching, rewriting the commit-graph. On a large repository the commit-graph alone makes `git log --graph` dramatically faster.",
+      "commands": ["git maintenance register", "git config --get-regexp maintenance | cat", "git commit-graph write --reachable", "sh -c 'ls .git/objects/info'", "git log --oneline --graph -3"],
+      "verify": [
+        { "cmd": "sh -c 'ls .git/objects/info | grep -c commit-graph'", "not_empty": true,
+          "label": "a commit-graph was written for faster history traversal",
+          "hint": "git commit-graph write --reachable" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'find .git/objects -name \"*.pack\" | wc -l'", "not_empty": true,
+      "label": "the repository's objects are packed",
+      "hint": "git gc" },
+    { "cmd": "sh -c 'git fsck --unreachable --no-reflogs | wc -l'", "equals": "0",
+      "label": "unreachable objects were pruned deliberately" },
+    { "cmd": "git log --oneline main", "lines": 31,
+      "label": "every reachable commit survived — gc never touches reachable history" },
+    { "cmd": "sh -c 'ls .git/objects/info | grep -c commit-graph'", "not_empty": true,
+      "label": "a commit-graph exists for faster traversal" },
+    { "cmd": "git fsck --full", "empty": true, "label": "the repository is healthy afterwards" }
+  ],
+  "pitfalls": [
+    "`git gc` is safe: it only deletes unreachable objects older than two weeks. `git gc --prune=now` is not, and it is what makes reflog recovery impossible.",
+    "gc runs automatically when loose objects pass a threshold. If a background gc is what deleted something, `gc.auto 0` stops it while you recover.",
+    "Packing does not shrink a repository whose size comes from a large reachable blob. That needs a history rewrite.",
+    "`git maintenance register` schedules background upkeep. On big repositories it, plus the commit-graph, is the single biggest speed win available.",
+    "A repository with tens of thousands of refs is slow regardless of packing. Prune stale branches and tags too."
+  ],
+  "cheatsheet": [
+    ["git count-objects -vH", "loose objects, packs and sizes"],
+    ["git gc", "pack objects and refs, prune old unreachable objects"],
+    ["git gc --prune=now", "delete unreachable objects immediately — no undo"],
+    ["git fsck --unreachable --no-reflogs", "what gc would eventually delete"],
+    ["git repack -ad", "rebuild a single optimal packfile"],
+    ["git commit-graph write --reachable", "speed up history traversal"],
+    ["git maintenance register", "schedule the upkeep in the background"]
+  ]
+}

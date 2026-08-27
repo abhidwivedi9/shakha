@@ -1,0 +1,122 @@
+{
+  "id": "forensics-bisect",
+  "title": "Find the commit that broke it, in seven steps out of a hundred",
+  "category": "forensics",
+  "level": "intermediate",
+  "order": 1,
+  "duration_min": 14,
+  "summary": "Something worked in the release and is broken now. Instead of reading a hundred commits, binary-search them: git bisect finds the culprit in log₂(n) tests.",
+  "concepts": ["git bisect start/good/bad", "binary search over history", "detached HEAD during bisect", "bisect reset", "bisect log"],
+  "mental_model": "Bisect needs two facts — a commit where it worked and one where it does not — and a way to test. It then checks out the midpoint, you answer good or bad, and it halves the range until one commit is left.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pricing.py", "content": "TAX = 0.20\n\n\ndef total(net):\n    return round(net * (1 + TAX), 2)\n" } },
+    { "write": { "path": "check.py", "content": "from pricing import total\n\nassert total(100) == 120.0, 'total(100) should be 120.0, got %r' % total(100)\nprint('ok')\n" } },
+    { "commit": { "message": "Add pricing and its check" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" },
+    { "write": { "path": "README.md", "content": "# Store\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "write": { "path": "pricing.py", "content": "TAX = 0.20\nSHIPPING = 4.99\n\n\ndef total(net):\n    return round(net * (1 + TAX), 2)\n" } },
+    { "commit": { "message": "Add a shipping constant" } },
+    { "write": { "path": "pricing.py", "content": "TAX = 0.20\nSHIPPING = 4.99\n\n\ndef total(net):\n    return round(net * (1 + TAX) + SHIPPING, 2)\n" } },
+    { "commit": { "message": "Include shipping in the total" } },
+    { "write": { "path": "docs.md", "content": "# Docs\n" } },
+    { "commit": { "message": "Add docs" } },
+    { "write": { "path": "pricing.py", "content": "TAX = 0.20\nSHIPPING = 4.99\nCURRENCY = 'GBP'\n\n\ndef total(net):\n    return round(net * (1 + TAX) + SHIPPING, 2)\n" } },
+    { "commit": { "message": "Add a currency constant" } },
+    { "write": { "path": "app.py", "content": "print('store')\n" } },
+    { "commit": { "message": "Add entrypoint" } }
+  ],
+  "steps": [
+    {
+      "title": "Confirm it is broken now, and worked then",
+      "why": "Bisect is only as good as your two endpoints. Verify both before starting, or you will spend seven tests searching a range that does not contain the bug.",
+      "commands": ["sh -c 'python check.py'", "sh -c 'git stash list; git log --oneline'"],
+      "expect": "An AssertionError: the total is no longer 120.0."
+    },
+    {
+      "title": "Check the known-good release",
+      "why": "Checking out the tag and running the test proves the endpoint. This is the step people skip, and it is why bisect sometimes 'finds' an innocent commit.",
+      "commands": ["git checkout -q v1.0", "sh -c 'python check.py'", "git checkout -q main"],
+      "expect": "ok — it genuinely worked at v1.0."
+    },
+    {
+      "title": "Start the search",
+      "why": "`bisect start` then `bad` and `good` define the range. Git immediately checks out the midpoint on a detached HEAD and tells you how many steps remain.",
+      "commands": ["git bisect start", "git bisect bad HEAD", "git bisect good v1.0", "git log --oneline -1", "git status"],
+      "expect": "Roughly three steps remaining, and HEAD detached at the midpoint.",
+      "verify": [
+        { "cmd": "sh -c 'test -d .git/BISECT_START -o -f .git/BISECT_START && echo bisecting'",
+          "contains": "bisecting", "label": "a bisect is in progress" }
+      ]
+    },
+    {
+      "title": "Test the midpoint and answer",
+      "why": "Run the check and tell git the answer. Each answer halves the remaining range — this is the whole algorithm, and it is why a hundred commits take seven tests.",
+      "actions": [
+        { "run": "sh -c 'python check.py > /dev/null 2>&1 && git bisect good || git bisect bad'" }
+      ],
+      "commands": ["git log --oneline -1", "git bisect log"],
+      "expect": "Git moves to the next midpoint and reports the remaining count."
+    },
+    {
+      "title": "Keep answering until it converges",
+      "why": "Repeating the same conditional is exactly what `bisect run` automates in the next scenario. Here you can watch the range shrink by hand.",
+      "actions": [
+        { "run": "sh -c 'python check.py > /dev/null 2>&1 && git bisect good || git bisect bad'" },
+        { "run": "sh -c 'python check.py > /dev/null 2>&1 && git bisect good || git bisect bad'" },
+        { "run": "sh -c 'python check.py > /dev/null 2>&1 && git bisect good || git bisect bad'" }
+      ],
+      "commands": ["git bisect log", "sh -c 'git bisect log | tail -3'"],
+      "expect": "'<sha> is the first bad commit', with its full message and diff."
+    },
+    {
+      "title": "Read the verdict",
+      "why": "Bisect writes the answer to `refs/bisect/bad` when it converges. The commit is 'Include shipping in the total' — correct, and found without reading any of the unrelated commits.",
+      "commands": ["sh -c 'git log -1 --format=\"%h %s\" refs/bisect/bad'", "sh -c 'git show refs/bisect/bad --stat'"],
+      "expect": "The shipping commit named as the culprit.",
+      "verify": [
+        { "cmd": "sh -c 'git log -1 --format=%s refs/bisect/bad'", "contains": "Include shipping",
+          "label": "bisect identified the commit that broke the total",
+          "hint": "answer good/bad at each step until it converges" }
+      ]
+    },
+    {
+      "title": "Stop bisecting and go back to work",
+      "why": "`bisect reset` returns you to the branch you started from and clears the state. Forgetting it leaves you on a detached HEAD, which is the usual cause of 'my changes disappeared' half an hour later.",
+      "commands": ["git bisect reset", "git status -sb", "git log --oneline -1", "git rev-parse --abbrev-ref HEAD"],
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+          "label": "you are back on main with the bisect state cleared",
+          "hint": "git bisect reset" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "the bisect was reset and you are back on your branch",
+      "hint": "git bisect reset when you are done" },
+    { "cmd": "sh -c 'test -f .git/BISECT_LOG && echo left-over || echo clean'", "contains": "clean",
+      "label": "no bisect state was left behind" },
+    { "cmd": "git log --oneline", "lines": 7,
+      "label": "history is untouched — bisect only reads, it never changes anything" },
+    { "cmd": "sh -c 'git log --oneline --grep=\"Include shipping\" | wc -l'", "equals": "1",
+      "label": "the culprit commit is identifiable by name for the follow-up fix" }
+  ],
+  "pitfalls": [
+    "Verify both endpoints before starting. A 'good' commit that was already broken sends bisect into the wrong half entirely.",
+    "During a bisect you are on a detached HEAD. Commit nothing; `git bisect reset` first.",
+    "If a commit cannot be tested — it does not build, for instance — answer `git bisect skip` rather than guessing.",
+    "`git bisect log > file` and `git bisect replay file` let you save and resume a search, which matters when each test takes ten minutes.",
+    "Bisect assumes the bug appeared once and stayed. A flaky test makes it converge confidently on an innocent commit."
+  ],
+  "cheatsheet": [
+    ["git bisect start", "begin a search"],
+    ["git bisect bad [<rev>]", "this commit has the bug"],
+    ["git bisect good <rev>", "this one did not"],
+    ["git bisect skip", "cannot test this commit"],
+    ["git bisect log", "the search so far"],
+    ["git bisect replay <file>", "resume a saved search"],
+    ["git bisect reset", "stop and return to your branch"]
+  ]
+}

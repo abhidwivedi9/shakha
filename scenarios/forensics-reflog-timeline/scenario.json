@@ -1,0 +1,124 @@
+{
+  "id": "forensics-reflog-timeline",
+  "title": "Reconstruct what someone did to this repository",
+  "category": "forensics",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 14,
+  "summary": "A colleague says 'I don't know, it just broke'. Read the reflogs to build a minute-by-minute timeline of every reset, rebase, checkout and merge they ran — then undo the damage.",
+  "concepts": ["HEAD reflog", "per-ref reflogs", "reflog with dates", "log -g", "ORIG_HEAD", "reconstructing intent"],
+  "mental_model": "Git keeps a journal per ref: HEAD's own, plus one for every branch and remote-tracking ref. Together they record every pointer movement with a timestamp and the command that caused it. Nothing that moved a ref is invisible.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "feature.py", "content": "IMPORTANT = 'three days of work'\n" } },
+    { "commit": { "message": "Add the important feature" } },
+    { "write": { "path": "feature.py", "content": "IMPORTANT = 'three days of work'\nMORE = 'and the tests'\n" } },
+    { "commit": { "message": "Test the important feature" } },
+    { "run": "git switch -q -c experiment/refactor" },
+    { "write": { "path": "core.py", "content": "class Core:\n    pass\n" } },
+    { "commit": { "message": "Refactor into a core module" } },
+    { "run": "git switch -q main" },
+    { "run": "git reset -q --hard HEAD~2" },
+    { "write": { "path": "app.py", "content": "print('v1 again')\n" } },
+    { "commit": { "message": "Try something else" } },
+    { "run": "git merge -q --no-ff -m \"Merge the refactor\" experiment/refactor" }
+  ],
+  "steps": [
+    {
+      "title": "The symptom",
+      "why": "Two commits of work are missing from main and nobody knows where they went. `git log` cannot help — it only shows what is currently reachable.",
+      "commands": ["git log --oneline --graph", "ls", "sh -c 'git log --all --oneline | wc -l'"],
+      "expect": "No 'Add the important feature' commit anywhere in the visible history."
+    },
+    {
+      "title": "Read HEAD's journal",
+      "why": "Every entry names the operation: commit, checkout, reset, merge. Read it bottom-up and you have the sequence of commands, in order, with the sha before and after each one.",
+      "commands": ["git reflog", "git reflog --date=iso"],
+      "expect": "A reset entry sitting in the middle — the moment the work left main.",
+      "verify": [
+        { "cmd": "sh -c 'git reflog | grep -c reset'", "not_empty": true,
+          "label": "the reflog records a reset" }
+      ]
+    },
+    {
+      "title": "Read the branch's own journal",
+      "why": "`git reflog show main` covers only that branch, which cuts out the noise of checkouts between branches. Each branch and each remote-tracking ref has one of these.",
+      "commands": ["git reflog show main", "sh -c 'ls .git/logs/refs/heads'", "sh -c 'cat .git/logs/refs/heads/main'"],
+      "expect": "A short list: three commits, a reset, a commit, a merge."
+    },
+    {
+      "title": "Build the timeline with timestamps",
+      "why": "`--date=iso` and a format string turn the reflog into an incident timeline you can paste into a ticket. This is the artefact that ends the 'it just broke' conversation.",
+      "commands": ["git reflog --date=iso --format='%gd | %ad | %gs'", "git log -g --format='%h %gd %gs' -8"],
+      "expect": "Each pointer movement, timestamped, with the command that caused it."
+    },
+    {
+      "title": "Find the exact pre-reset commit",
+      "why": "`log -g` walks the reflog as if it were history, so you can search it by commit message — much easier than counting `HEAD@{n}` entries by eye.",
+      "commands": ["git log -g --oneline --grep=\"important feature\"", "sh -c 'git log -g --format=%H --grep=\"Test the important\" -1'"],
+      "expect": "The sha of the lost tip, recovered by searching the journal.",
+      "verify": [
+        { "cmd": "sh -c 'git log -g --format=%H --grep=\"Test the important\" -1'", "not_empty": true,
+          "label": "the lost commit is findable in the reflog" }
+      ]
+    },
+    {
+      "title": "Recover the work onto a branch",
+      "why": "Give it a name and it stops being lost. Branching rather than resetting main means you can inspect the recovered work before deciding how to reintegrate it.",
+      "actions": [
+        { "run": "sh -c 'git branch recovered/important $(git log -g --format=%H --grep=\"Test the important\" -1)'" }
+      ],
+      "commands": ["git log --oneline recovered/important", "git show recovered/important:feature.py", "git log --oneline --graph --all --decorate"],
+      "verify": [
+        { "cmd": "git log --oneline recovered/important", "contains": "Add the important feature",
+          "label": "the reset work is on a branch again",
+          "hint": "git branch recovered/important <sha-from-reflog>" }
+      ]
+    },
+    {
+      "title": "Merge it back and record what happened",
+      "why": "Reintegrate deliberately with a merge, and write the incident down. The reflog is local and expires; a commit message is permanent and travels with the repository.",
+      "actions": [
+        { "run": "git merge -q --no-ff -m \"Merge recovered work that was lost to a reset --hard\" recovered/important" },
+        { "write": { "path": "INCIDENT.md", "content": "# Lost commits, recovered\n\nTwo commits were removed from main by a `git reset --hard HEAD~2`.\nFound in the HEAD reflog and restored via a branch, then merged back.\nNothing was lost; the reflog would have expired after 90 days.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the reset incident\"" }
+      ],
+      "commands": ["git log --oneline --graph -6", "cat feature.py", "ls"],
+      "verify": [
+        { "cmd": "cat feature.py", "contains": ["three days of work", "and the tests"],
+          "label": "the recovered work is back in the working tree" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "contains": ["Add the important feature", "Test the important feature"],
+      "label": "the commits destroyed by reset --hard are back on main",
+      "hint": "find them with git log -g, branch at that sha, then merge" },
+    { "cmd": "cat feature.py", "contains": "and the tests",
+      "label": "their content is in the working tree" },
+    { "cmd": "git ls-files", "contains": "INCIDENT.md",
+      "label": "the incident is documented in the repository, not just the reflog" },
+    { "cmd": "git branch --list recovered/important", "not_empty": true,
+      "label": "the recovery branch is still there for reference" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Reflogs are per-clone and never pushed. Forensics must happen on the machine where the commands were run.",
+    "Default expiry is 90 days for reachable entries and 30 for unreachable ones. After that, `git fsck --lost-found` is the only route left.",
+    "`git reflog` alone shows HEAD's journal. Branch-specific problems need `git reflog show <branch>`, which is a different list.",
+    "Reflog entries record the command name, not its arguments. A 'reset' entry tells you a reset happened, not what was typed.",
+    "`git log -g --grep` searches commit messages within the reflog — far easier than counting HEAD@{n} positions."
+  ],
+  "cheatsheet": [
+    ["git reflog", "HEAD's journal of every move"],
+    ["git reflog show <branch>", "one branch's journal"],
+    ["git reflog --date=iso", "with timestamps, for a timeline"],
+    ["git log -g --oneline", "walk the reflog as if it were history"],
+    ["git log -g --grep=<text>", "find a lost commit by message"],
+    ["git branch <name> <sha>", "make a found commit reachable"],
+    ["cat .git/logs/refs/heads/<branch>", "the raw journal file"]
+  ]
+}

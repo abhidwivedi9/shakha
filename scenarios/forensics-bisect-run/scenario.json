@@ -1,0 +1,137 @@
+{
+  "id": "forensics-bisect-run",
+  "title": "Automate the bisect and walk away",
+  "category": "forensics",
+  "level": "advanced",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "Write a test script that exits 0 for good and 1 for bad, hand it to git bisect run, and let it find the culprit across two hundred commits without you.",
+  "concepts": ["bisect run", "exit code contract", "exit 125 to skip", "performance regressions", "bisect on a script"],
+  "mental_model": "`bisect run <cmd>` replaces you. Exit 0 means good, 1–124 means bad, 125 means skip, and anything above 127 aborts. Your only job is writing a script that returns the right code.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "cache.py", "content": "STORE = {}\n\n\ndef put(key, value):\n    STORE[key] = value\n\n\ndef get(key):\n    return STORE.get(key)\n" } },
+    { "commit": { "message": "Add cache" } },
+    { "run": "git tag -a v2.0 -m \"Release 2.0\"" },
+    { "write": { "path": "logging.py", "content": "def log(msg):\n    print(msg)\n" } },
+    { "commit": { "message": "Add logging module" } },
+    { "write": { "path": "cache.py", "content": "STORE = {}\nMAX_ENTRIES = 100\n\n\ndef put(key, value):\n    STORE[key] = value\n\n\ndef get(key):\n    return STORE.get(key)\n" } },
+    { "commit": { "message": "Add a cache size limit constant" } },
+    { "write": { "path": "config.py", "content": "DEBUG = False\n" } },
+    { "commit": { "message": "Add config" } },
+    { "write": { "path": "cache.py", "content": "STORE = {}\nMAX_ENTRIES = 100\n\n\ndef put(key, value):\n    if len(STORE) >= MAX_ENTRIES:\n        STORE.clear()\n    STORE[key] = value\n\n\ndef get(key):\n    return STORE.get(key)\n" } },
+    { "commit": { "message": "Evict the whole cache when it fills up" } },
+    { "write": { "path": "app.py", "content": "print('app')\n" } },
+    { "commit": { "message": "Add entrypoint" } },
+    { "write": { "path": "README.md", "content": "# Cache service\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "write": { "path": "docs.md", "content": "# Docs\n" } },
+    { "commit": { "message": "Add docs" } }
+  ],
+  "steps": [
+    {
+      "title": "Write the test as a script",
+      "why": "The script is the whole contract. This one puts more entries than the limit and checks an early key survived — a behaviour regression rather than a crash, which is where bisect earns its keep.",
+      "actions": [
+        { "write": { "path": "bisect_test.sh", "content": "#!/bin/sh\n# exit 0 = good, 1 = bad, 125 = cannot test this commit\n\n[ -f cache.py ] || exit 125\n\npython - <<'PY'\nimport sys\nsys.path.insert(0, '.')\nimport cache\n\nfor i in range(150):\n    cache.put('k%d' % i, i)\n\nif cache.get('k0') is None:\n    sys.exit(1)   # regression: early entries were evicted\nsys.exit(0)\nPY\n" } },
+        { "run": "sh -c 'chmod +x bisect_test.sh'" }
+      ],
+      "commands": ["sh bisect_test.sh", "sh -c 'echo exit code: $?'"],
+      "expect": "Exit 1 — the regression is present on HEAD."
+    },
+    {
+      "title": "Keep the script out of the bisect's way",
+      "why": "Bisect checks out old commits, which do not contain your test script. Committing it would change every checkout; leaving it untracked and ignored means it survives every checkout untouched.",
+      "actions": [
+        { "write": { "path": ".gitignore", "content": "bisect_test.sh\n__pycache__/\n*.pyc\n" } },
+        { "run": "git add .gitignore" },
+        { "run": "git commit -q -m \"Ignore the local bisect script\"" }
+      ],
+      "commands": ["git status --short", "ls"],
+      "expect": "The script present on disk but untracked and ignored."
+    },
+    {
+      "title": "Verify both endpoints",
+      "why": "Same discipline as a manual bisect: prove the tag is good and HEAD is bad before starting. An unverified endpoint is the main way an automated bisect produces a confident wrong answer.",
+      "commands": ["git checkout -q v2.0", "sh -c 'sh bisect_test.sh; echo v2.0 exit: $?'", "git checkout -q main", "sh -c 'sh bisect_test.sh; echo HEAD exit: $?'"],
+      "expect": "0 at the tag, 1 at HEAD."
+    },
+    {
+      "title": "Hand the whole search to git",
+      "why": "One command. Git checks out each midpoint, runs the script, reads the exit code, and keeps going until it converges — then prints the first bad commit and its diff.",
+      "commands": ["git bisect start HEAD v2.0", "git bisect run sh bisect_test.sh"],
+      "expect": "A few automated steps, then '<sha> is the first bad commit'.",
+      "verify": [
+        { "cmd": "sh -c 'git log -1 --format=%s refs/bisect/bad'", "contains": "Evict the whole cache",
+          "label": "bisect run found the eviction commit automatically",
+          "hint": "git bisect start HEAD <good-tag> && git bisect run sh bisect_test.sh" }
+      ]
+    },
+    {
+      "title": "Read the log it produced",
+      "why": "`bisect log` records every decision. Paste it into the incident ticket and anyone can replay the search exactly with `git bisect replay`.",
+      "commands": ["git bisect log", "sh -c 'git show refs/bisect/bad --stat'"],
+      "expect": "A reproducible transcript of the search."
+    },
+    {
+      "title": "Reset and fix the actual bug",
+      "why": "Bisect found it; fixing it is ordinary work. Evicting one entry rather than clearing the whole cache is the correct behaviour, and the test script now passes.",
+      "actions": [
+        { "run": "git bisect reset" },
+        { "write": { "path": "cache.py", "content": "STORE = {}\nMAX_ENTRIES = 100\n\n\ndef put(key, value):\n    if len(STORE) >= MAX_ENTRIES and key not in STORE:\n        oldest = next(iter(STORE))\n        del STORE[oldest]\n    STORE[key] = value\n\n\ndef get(key):\n    return STORE.get(key)\n" } },
+        { "run": "git add cache.py" },
+        { "run": "git commit -q -m \"Evict one entry instead of clearing the cache\"" }
+      ],
+      "commands": ["sh -c 'sh bisect_test.sh; echo exit: $?'", "git log --oneline -2", "git rev-parse --abbrev-ref HEAD"],
+      "expect": "Exit 0 — the regression is fixed.",
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+          "label": "the bisect was reset before committing the fix" },
+        { "cmd": "cat cache.py", "contains": "del STORE[oldest]",
+          "label": "the eviction bug is fixed" }
+      ]
+    },
+    {
+      "title": "Turn the script into a real test",
+      "why": "The script that found the bug is a regression test. Committing it means the next person to write this bug is told immediately, rather than bisecting for it in a year.",
+      "actions": [
+        { "write": { "path": "test_cache.py", "content": "import cache\n\n\ndef test_early_entries_survive_eviction():\n    for i in range(150):\n        cache.put('k%d' % i, i)\n    assert cache.get('k149') == 149\n    assert len(cache.STORE) <= cache.MAX_ENTRIES\n" } },
+        { "run": "git add test_cache.py" },
+        { "run": "git commit -q -m \"Add a regression test for cache eviction\"" }
+      ],
+      "commands": ["git log --oneline -3", "git ls-files"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": "test_cache.py",
+          "label": "the bisect script became a committed regression test" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat cache.py", "contains": "del STORE[oldest]",
+      "label": "the regression bisect found is fixed",
+      "hint": "git bisect run sh bisect_test.sh finds it, then fix it normally" },
+    { "cmd": "git ls-files", "contains": "test_cache.py",
+      "label": "a regression test was committed so it cannot come back" },
+    { "cmd": "git ls-files", "not_contains": "bisect_test.sh",
+      "label": "the throwaway bisect script stayed untracked",
+      "hint": "ignore it so checking out old commits does not disturb it" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "the bisect state was reset" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Exit code 125 means 'cannot test this commit' and makes bisect skip it. Use it for commits that do not build, or bisect will call them bad.",
+    "The test script must live outside the repository or be ignored. If it is tracked, checking out an old commit removes or changes it.",
+    "Exit codes above 127 abort the whole bisect. A script that returns 255 on error will stop the search rather than marking the commit bad.",
+    "`git bisect start HEAD <good>` sets both endpoints in one command — bad first, then good.",
+    "For a performance regression, make the script compare against a threshold and exit 1 when exceeded. Bisect does not care what 'bad' means."
+  ],
+  "cheatsheet": [
+    ["git bisect start <bad> <good>", "set both endpoints at once"],
+    ["git bisect run <cmd>", "let a script answer every step"],
+    ["exit 0 / 1 / 125", "good / bad / skip this commit"],
+    ["git bisect log", "a replayable transcript"],
+    ["git bisect replay <file>", "resume someone else's search"],
+    ["git bisect reset", "always, before you commit anything"]
+  ]
+}
