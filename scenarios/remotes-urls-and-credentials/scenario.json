@@ -1,0 +1,147 @@
+{
+  "id": "remotes-urls-and-credentials",
+  "title": "SSH or HTTPS, and why git keeps asking for your password",
+  "category": "remotes",
+  "level": "intermediate",
+  "order": 9,
+  "duration_min": 14,
+  "summary": "Switch a remote between URL schemes, rewrite URLs globally with insteadOf, and configure a credential helper so authentication stops being a daily interruption.",
+  "concepts": ["remote set-url", "url.insteadOf", "pushInsteadOf", "credential.helper", "per-URL config", "SSH vs HTTPS trade-offs"],
+  "mental_model": "A remote URL is just config, and git rewrites it through `url.<base>.insteadOf` before using it. Authentication is chosen by scheme: SSH uses your key, HTTPS asks a credential helper. Both are configuration problems, not git problems.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git remote add origin https://git.company.example/team/reef-controller.git" },
+    { "run": "git remote add upstream https://git.company.example/platform/reef-controller.git" }
+  ],
+  "steps": [
+    {
+      "title": "See what a remote actually is",
+      "why": "`remote -v` is a config read. The URL lives in `.git/config` under `remote.<name>.url` — there is no registry and no state beyond that line.",
+      "commands": ["git remote -v", "git config --get remote.origin.url", "sh -c 'git config --local --list | grep remote'"],
+      "expect": "Two remotes, both HTTPS, both plain config entries."
+    },
+    {
+      "title": "Switch one to SSH",
+      "why": "`remote set-url` rewrites the config line. Nothing else changes — the same commits, the same refs, a different transport and a different way of proving who you are.",
+      "commands": ["git remote set-url origin git@git.company.example:team/reef-controller.git", "git remote -v", "git config --get remote.origin.url"],
+      "verify": [
+        { "cmd": "git config --get remote.origin.url", "matches": "^git@",
+          "label": "origin now uses SSH",
+          "hint": "git remote set-url origin git@host:path.git" }
+      ]
+    },
+    {
+      "title": "Rewrite every URL from one host at once",
+      "why": "`url.<base>.insteadOf` rewrites matching URLs at use time. One config line converts every HTTPS URL for that host to SSH — including ones inside `.gitmodules` that you cannot edit.",
+      "actions": [
+        { "run": "sh -c 'git config --global url.\"git@git.company.example:\".insteadOf \"https://git.company.example/\"'" }
+      ],
+      "commands": ["git config --global --get-regexp insteadOf | cat", "git config --get remote.upstream.url", "sh -c 'git ls-remote --get-url upstream'"],
+      "expect": "The stored URL is still HTTPS, but the URL git would actually use is SSH.",
+      "verify": [
+        { "cmd": "sh -c 'git ls-remote --get-url upstream'", "matches": "^git@",
+          "label": "the HTTPS URL is rewritten to SSH at use time",
+          "hint": "git config --global url.\"git@host:\".insteadOf \"https://host/\"" },
+        { "cmd": "git config --get remote.upstream.url", "matches": "^https://",
+          "label": "…while the config still stores the original URL" }
+      ]
+    },
+    {
+      "title": "Fetch over HTTPS, push over SSH",
+      "why": "`pushInsteadOf` rewrites only push URLs. This is the classic open-source setup: anonymous read over HTTPS with no key needed, authenticated write over SSH.",
+      "actions": [
+        { "run": "sh -c 'git config --global --unset-all url.\"git@git.company.example:\".insteadOf'" },
+        { "run": "sh -c 'git config --global url.\"git@git.company.example:\".pushInsteadOf \"https://git.company.example/\"'" }
+      ],
+      "commands": ["sh -c 'git ls-remote --get-url upstream'", "sh -c 'git remote get-url --push upstream'", "git config --global --get-regexp insteadOf | cat"],
+      "expect": "Fetch resolves to HTTPS, push resolves to SSH — same remote, two URLs.",
+      "verify": [
+        { "cmd": "sh -c 'git remote get-url --push upstream'", "matches": "^git@",
+          "label": "pushes are rewritten to SSH",
+          "hint": "url.<ssh-base>.pushInsteadOf <https-base>" },
+        { "cmd": "sh -c 'git remote get-url upstream'", "matches": "^https://",
+          "label": "…while fetches stay on HTTPS" }
+      ]
+    },
+    {
+      "title": "Stop the password prompts",
+      "why": "Over HTTPS git asks a credential helper for the token. Without one configured it asks you, every time. `store` writes to a plain file, `cache` keeps it in memory, and the platform helpers use the OS keychain — which is the one you want.",
+      "commands": ["sh -c 'git config --global credential.helper \"cache --timeout=3600\"'", "git config --global --get credential.helper", "sh -c 'echo \"platform helpers: manager (Windows), osxkeychain (macOS), libsecret (Linux)\"'"],
+      "verify": [
+        { "cmd": "git config --global --get credential.helper", "contains": "cache",
+          "label": "a credential helper is configured",
+          "hint": "git config --global credential.helper 'cache --timeout=3600'" }
+      ]
+    },
+    {
+      "title": "Configure credentials per host",
+      "why": "`credential.<url>.*` scopes settings to one host, so a work forge and a personal one can use different usernames and different helpers without interfering.",
+      "actions": [
+        { "run": "sh -c 'git config --global credential.\"https://git.company.example\".username ci-bot'" },
+        { "run": "sh -c 'git config --global credential.\"https://git.company.example\".helper \"cache --timeout=7200\"'" }
+      ],
+      "commands": ["git config --global --get-regexp credential | cat", "sh -c 'printf \"protocol=https\\nhost=git.company.example\\n\\n\" | git credential fill --help >/dev/null 2>&1 || true; echo \"git credential fill is what git runs internally\"'"],
+      "verify": [
+        { "cmd": "sh -c 'git config --global --get credential.\"https://git.company.example\".username'",
+          "equals": "ci-bot",
+          "label": "credentials are configured per host",
+          "hint": "git config --global credential.<url>.username <name>" }
+      ]
+    },
+    {
+      "title": "Point a remote at a completely different server",
+      "why": "Migrations are a config change. Set the new URL, push everything, and every clone that repoints is done — the object database does not care where it came from.",
+      "actions": [
+        { "run": "git init --bare -q -b main ../new-server.git" },
+        { "run": "sh -c 'git remote set-url origin \"$(cd ../new-server.git && pwd)\"'" },
+        { "run": "git push -q -u origin main" }
+      ],
+      "commands": ["git remote -v", "sh -c 'cd ../new-server.git && git log --oneline main'", "git status -sb"],
+      "expect": "The repository now lives on a different server, with no history change at all.",
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "new-server.git", "lines": 1,
+          "label": "the repository was migrated by changing one config line",
+          "hint": "git remote set-url origin <new-url>, then push" }
+      ]
+    },
+    {
+      "title": "Know which scheme to choose",
+      "why": "SSH: keys, no prompts, blocked by some corporate firewalls. HTTPS: works everywhere, needs a token and a helper, and is what CI usually uses. Neither is more secure in practice — the difference is operational.",
+      "commands": ["git remote -v", "git config --global --get-regexp 'url|credential' | cat"],
+      "expect": "Nothing to run; this step is the summary."
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git remote get-url --push upstream'", "matches": "^git@",
+      "label": "pushes to the forge are rewritten to SSH",
+      "hint": "url.<ssh>.pushInsteadOf <https>" },
+    { "cmd": "sh -c 'git remote get-url upstream'", "matches": "^https://",
+      "label": "…while fetches remain anonymous over HTTPS" },
+    { "cmd": "git config --global --get credential.helper", "contains": "cache",
+      "label": "a credential helper avoids repeated prompts" },
+    { "cmd": "sh -c 'git config --global --get credential.\"https://git.company.example\".username'",
+      "equals": "ci-bot",
+      "label": "per-host credential settings are in place" },
+    { "cmd": "git log --oneline main", "cwd": "new-server.git", "lines": 1,
+      "label": "the repository was repointed at a new server successfully" }
+  ],
+  "pitfalls": [
+    "`credential.helper store` writes tokens in plain text to `~/.git-credentials`. Convenient, and a genuine security problem on a shared machine — prefer the OS keychain helper.",
+    "`insteadOf` rewrites at use time, so `git remote -v` still shows the original URL. Use `git ls-remote --get-url` to see what git will actually contact.",
+    "A helper configured globally applies to every host, including ones you do not control. Scope it with `credential.<url>.helper` when that matters.",
+    "Personal access tokens expire. A push that suddenly fails with a 403 after months of working is almost always an expired token, not a permissions change.",
+    "SSH host keys change when a forge rotates them, producing an alarming warning. Verify the new fingerprint against the provider's published list before accepting it."
+  ],
+  "cheatsheet": [
+    ["git remote -v", "the stored URLs"],
+    ["git ls-remote --get-url <remote>", "the URL git will actually use"],
+    ["git remote get-url --push <remote>", "the push URL specifically"],
+    ["git remote set-url <remote> <url>", "repoint a remote"],
+    ["git config --global url.\"<a>\".insteadOf \"<b>\"", "rewrite URLs globally"],
+    ["url.\"<ssh>\".pushInsteadOf \"<https>\"", "read over HTTPS, write over SSH"],
+    ["git config --global credential.helper <helper>", "stop the prompts"],
+    ["git config credential.<url>.username <name>", "per-host credentials"]
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "id": "history-diff-tuning",
+  "title": "Review a refactor whose diff says every line changed",
+  "category": "history",
+  "level": "advanced",
+  "order": 9,
+  "duration_min": 14,
+  "summary": "Code was moved, reindented and renamed in one commit. The default diff is unreadable. Four flags turn it into a review you can actually do — and one of them belongs in your global config.",
+  "concepts": ["--color-moved", "--patience / --histogram", "-w and --ignore-blank-lines", "--function-context", "--stat vs --numstat", "diff.algorithm"],
+  "mental_model": "A diff is computed, not stored, so you can ask for a different one at any time. The default algorithm optimises for size, not for human reading — the flags below trade a little computation for a diff that reflects what actually happened.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "service.py", "content": "import json\n\n\ndef load_config(path):\n    with open(path) as handle:\n        return json.load(handle)\n\n\ndef validate(config):\n    if 'name' not in config:\n        raise ValueError('name is required')\n    if 'retries' not in config:\n        raise ValueError('retries is required')\n    return True\n\n\ndef start(path):\n    config = load_config(path)\n    validate(config)\n    return config\n" } },
+    { "commit": { "message": "Add the service module" } },
+    { "write": { "path": "service.py", "content": "import json\n\n\ndef start(path):\n    config = load_config(path)\n    validate(config)\n    return config\n\n\ndef load_config(path):\n    with open(path) as handle:\n        return json.load(handle)\n\n\ndef validate(config):\n    if 'name' not in config:\n        raise ValueError('name is required')\n    if 'retries' not in config:\n        raise ValueError('retries is required')\n    if 'timeout' not in config:\n        raise ValueError('timeout is required')\n    return True\n" } },
+    { "commit": { "message": "Reorder functions and add a timeout check" } },
+    { "write": { "path": "settings.py", "content": "RETRIES  =  3\nTIMEOUT  =  30\nNAME     =  'reef'\n" } },
+    { "commit": { "message": "Add settings" } },
+    { "write": { "path": "settings.py", "content": "RETRIES = 3\nTIMEOUT = 30\nNAME = 'reef'\n" } },
+    { "commit": { "message": "Reformat settings alignment" } }
+  ],
+  "steps": [
+    {
+      "title": "The diff nobody can review",
+      "why": "One real change — a new timeout check — hidden inside a wholesale reordering. The default diff reports far more churn than actually happened, because it optimises for a small diff rather than a meaningful one.",
+      "commands": ["git show HEAD~2 --stat", "git show HEAD~2 -- service.py"],
+      "expect": "Large removed and added blocks that are mostly the same code in a different place."
+    },
+    {
+      "title": "Count the noise",
+      "why": "`--numstat` gives added and removed line counts per file, machine-readably. Establish the baseline number before trying to reduce it — this is how you tell whether a flag actually helped.",
+      "commands": ["git show HEAD~2 --numstat -- service.py", "sh -c 'git show HEAD~2 --numstat -- service.py | tail -1'"],
+      "expect": "Double-digit additions and removals for a change that added three lines."
+    },
+    {
+      "title": "Highlight code that only moved",
+      "why": "`--color-moved` classifies each added line: genuinely new, or moved from elsewhere in the same diff. `--color-moved-ws=allow-indentation-change` also forgives reindentation, which is what makes it work on real refactors.",
+      "commands": ["git show HEAD~2 --color-moved=zebra --color-moved-ws=allow-indentation-change -- service.py", "git -c color.ui=always show HEAD~2 --color-moved=dimmed-zebra -- service.py"],
+      "expect": "The moved functions marked distinctly from the one genuinely new check."
+    },
+    {
+      "title": "Choose a better algorithm",
+      "why": "`patience` and `histogram` produce diffs that align on distinctive lines rather than the shortest edit script. On reordered or heavily indented code they routinely turn a 60-line diff into a 6-line one.",
+      "commands": ["sh -c 'echo default:   $(git show HEAD~2 --numstat -- service.py | tail -1)'", "sh -c 'echo patience:  $(git show HEAD~2 --patience --numstat -- service.py | tail -1)'", "sh -c 'echo histogram: $(git show HEAD~2 --histogram --numstat -- service.py | tail -1)'"],
+      "expect": "Different line counts for the same commit — same content, better alignment."
+    },
+    {
+      "title": "Make the better algorithm your default",
+      "why": "`diff.algorithm histogram` applies it to every diff, log and show. There is no downside worth worrying about: it is marginally slower and consistently more readable.",
+      "commands": ["git config diff.algorithm histogram", "git config --get diff.algorithm", "git show HEAD~2 --numstat -- service.py"],
+      "verify": [
+        { "cmd": "git config --get diff.algorithm", "equals": "histogram",
+          "label": "a more readable diff algorithm is the default",
+          "hint": "git config diff.algorithm histogram" }
+      ]
+    },
+    {
+      "title": "Ignore whitespace-only churn",
+      "why": "The settings reformat changed alignment and nothing else. `-w` ignores whitespace entirely; `--ignore-blank-lines` handles the other common source of fake churn. Together they answer 'did anything actually change'.",
+      "commands": ["git diff --numstat HEAD~1 HEAD -- settings.py", "git diff -w --numstat HEAD~1 HEAD -- settings.py", "git diff -w HEAD~1 HEAD -- settings.py"],
+      "expect": "Three changed lines normally, and completely empty output with -w — proof the commit was cosmetic. (Use `git diff` rather than `git show` for this test: show prints the commit header even when the diff is empty.)",
+      "verify": [
+        { "cmd": "git diff -w --numstat HEAD~1 HEAD -- settings.py", "empty": true,
+          "label": "the reformat commit contains no real change",
+          "hint": "git diff -w between the two commits proves a diff is whitespace-only" }
+      ]
+    },
+    {
+      "title": "Show which function each hunk is in",
+      "why": "`--function-context` expands every hunk to the whole function containing it, so you review a change in its context rather than through a three-line window. Expensive to read, invaluable on unfamiliar code.",
+      "commands": ["git show HEAD~2 --function-context -- service.py", "git show HEAD~2 -U10 -- service.py"],
+      "expect": "Whole functions rather than fragments."
+    },
+    {
+      "title": "Record the settings so the team benefits",
+      "why": "Algorithm and move detection are per-clone config, so put the lines in your contributing guide. A reviewer reading a moved-code diff without these flags will comment on things that did not change.",
+      "actions": [
+        { "run": "git config diff.colorMoved zebra" },
+        { "run": "git config diff.colorMovedWS allow-indentation-change" },
+        { "write": { "path": "CONTRIBUTING.md", "content": "# Contributing\n\nRun these once per clone so refactor diffs are readable:\n\n    git config diff.algorithm histogram\n    git config diff.colorMoved zebra\n    git config diff.colorMovedWS allow-indentation-change\n\nWhen reviewing a reformat, check it with `git show -w` before commenting.\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the diff settings reviewers should use\"" }
+      ],
+      "commands": ["git config --get-regexp diff | cat", "cat CONTRIBUTING.md"],
+      "verify": [
+        { "cmd": "git config --get diff.colorMoved", "equals": "zebra",
+          "label": "moved-code highlighting is on by default" },
+        { "cmd": "git ls-files", "contains": "CONTRIBUTING.md",
+          "label": "the settings are documented for everyone else" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get diff.algorithm", "equals": "histogram",
+      "label": "a readable diff algorithm is configured",
+      "hint": "git config diff.algorithm histogram" },
+    { "cmd": "git config --get diff.colorMoved", "equals": "zebra",
+      "label": "moved-code detection is on" },
+    { "cmd": "git config --get diff.colorMovedWS", "equals": "allow-indentation-change",
+      "label": "…and forgives reindentation, which is what makes it useful" },
+    { "cmd": "git diff -w --numstat HEAD~2 HEAD~1 -- settings.py", "empty": true,
+      "label": "you can prove the reformat commit changed nothing real",
+      "hint": "git diff -w between the commit and its parent" },
+    { "cmd": "git ls-files", "contains": "CONTRIBUTING.md",
+      "label": "the reviewer settings are written down" }
+  ],
+  "pitfalls": [
+    "`--color-moved` only works with colour enabled. In a pipe or a script add `-c color.ui=always`, or you will see nothing and conclude it does not work.",
+    "`-w` hides genuine whitespace bugs — in Python, YAML or Makefiles indentation IS the code. Use it to answer a question, not as a default.",
+    "Changing `diff.algorithm` does not change any commit. Diffs are computed at read time, so this is purely a display setting.",
+    "Reordering functions and changing them in the same commit defeats every one of these flags. The real fix is to split the commit.",
+    "`--numstat` is the scriptable form; `--stat` is the human one and truncates long paths."
+  ],
+  "cheatsheet": [
+    ["git diff --color-moved=zebra", "distinguish moved code from new code"],
+    ["--color-moved-ws=allow-indentation-change", "…even when it was reindented"],
+    ["git diff --patience / --histogram", "align on distinctive lines, not the shortest edit"],
+    ["git config diff.algorithm histogram", "make it the default"],
+    ["git diff -w --ignore-blank-lines", "is there any real change at all"],
+    ["git diff --function-context", "expand hunks to whole functions"],
+    ["git diff --numstat", "added/removed counts, for scripts"]
+  ]
+}

@@ -1,0 +1,141 @@
+{
+  "id": "internals-replace-and-grafts",
+  "title": "Change what git shows you without changing history",
+  "category": "internals",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 15,
+  "summary": "git replace substitutes one object for another at read time. Stitch a truncated history back onto its archive, correct a botched commit message locally, and see why the shas never change.",
+  "concepts": ["git replace", "refs/replace/*", "read-time substitution", "grafting histories", "--no-replace-objects", "sharing replacements"],
+  "mental_model": "Every command that reads an object checks `refs/replace/<sha>` first. If a replacement exists, git uses it instead — so history appears different while every original object, and every sha, stays exactly as it was.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Iniital comit with a typo in the mesage\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add pump control\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"Add dosing\"" }
+  ],
+  "steps": [
+    {
+      "title": "A commit message nobody can fix",
+      "why": "The typo is in the first commit, so amending it would rewrite every commit after it. On a shared repository that is a coordinated migration — for a spelling mistake.",
+      "commands": ["git log --oneline", "sh -c 'git log --format=\"%h %s\" | tail -1'", "sh -c 'git rev-parse $(git rev-list --max-parents=0 HEAD)'"],
+      "expect": "The typo, and the root commit's sha which we will not be changing."
+    },
+    {
+      "title": "Build a corrected copy of that commit",
+      "why": "`commit-tree` makes a new commit with the same tree and the same parents but a better message. It is an addition to the object database, not a modification — the original is untouched.",
+      "actions": [
+        { "run": "sh -c 'root=$(git rev-list --max-parents=0 HEAD); git commit-tree $root^{tree} -m \"Initial commit\" > .git/fixed-root'" }
+      ],
+      "commands": ["sh -c 'cat .git/fixed-root'", "sh -c 'git log -1 --format=\"%h %s\" $(cat .git/fixed-root)'", "git log --oneline"],
+      "expect": "A new commit object with the corrected message, invisible to git log because nothing points at it.",
+      "verify": [
+        { "cmd": "sh -c 'git log -1 --format=%s $(cat .git/fixed-root)'", "equals": "Initial commit",
+          "label": "a corrected copy of the commit exists" },
+        { "cmd": "git log --oneline", "contains": "Iniital comit",
+          "label": "…and history still shows the original" }
+      ]
+    },
+    {
+      "title": "Substitute it",
+      "why": "`git replace <original> <replacement>` writes a ref under `refs/replace/`. Every read of the original sha now returns the replacement — so the log reads correctly while nothing was rewritten.",
+      "actions": [
+        { "run": "sh -c 'git replace $(git rev-list --max-parents=0 HEAD) $(cat .git/fixed-root)'" }
+      ],
+      "commands": ["git log --oneline", "git replace -l", "git for-each-ref refs/replace"],
+      "expect": "The typo is gone from the log, and a replace ref exists.",
+      "verify": [
+        { "cmd": "git log --oneline", "not_contains": "Iniital comit",
+          "label": "the log no longer shows the typo",
+          "hint": "git replace <original-sha> <replacement-sha>" },
+        { "cmd": "git replace -l", "not_empty": true, "label": "a replacement is registered" }
+      ]
+    },
+    {
+      "title": "Prove nothing was rewritten",
+      "why": "The other commits' shas are unchanged, because their parent pointers still name the original object. This is exactly what a rebase cannot do, and the entire reason `replace` exists.",
+      "commands": ["git log --format='%h %s'", "sh -c 'git --no-replace-objects log --oneline'", "sh -c 'git rev-list --max-parents=0 HEAD'", "sh -c 'git --no-replace-objects rev-list --max-parents=0 HEAD'"],
+      "expect": "The same shas either way — only the message shown differs.",
+      "verify": [
+        { "cmd": "sh -c 'git --no-replace-objects log --oneline | grep -c \"Iniital comit\"'", "equals": "1",
+          "label": "the original object is still there, unmodified",
+          "hint": "--no-replace-objects bypasses every replacement" },
+        { "cmd": "git log --oneline", "lines": 3,
+          "label": "…and the commit count is unchanged" }
+      ]
+    },
+    {
+      "title": "The serious use: stitch a truncated history back on",
+      "why": "Repositories are often truncated to keep clones small, and the old history archived. `replace` can graft the archive back on for the afternoon you need to run blame across the join — then be removed again.",
+      "actions": [
+        { "run": "sh -c 'git clone -q --mirror \"file://$(pwd)\" ../archive.git'" },
+        { "run": "sh -c 'git commit-tree $(git rev-list --max-parents=0 HEAD)^{tree} -m \"Historical archive root\" > .git/archive-root'" },
+        { "run": "sh -c 'root=$(git rev-list --max-parents=0 HEAD); git commit-tree $root^{tree} -p $(cat .git/archive-root) -m \"Initial commit\" > .git/grafted-root'" },
+        { "run": "sh -c 'git replace -f $(git --no-replace-objects rev-list --max-parents=0 HEAD) $(cat .git/grafted-root)'" }
+      ],
+      "commands": ["git log --oneline", "sh -c 'git rev-list --count HEAD'", "sh -c 'git --no-replace-objects rev-list --count HEAD'"],
+      "expect": "One extra commit appears at the root — history grew without any commit being rewritten.",
+      "verify": [
+        { "cmd": "sh -c 'git rev-list --count HEAD'", "equals": "4",
+          "label": "the grafted history is visible",
+          "hint": "replace the root with a copy that has the archive as its parent" },
+        { "cmd": "sh -c 'git --no-replace-objects rev-list --count HEAD'", "equals": "3",
+          "label": "…while the real history is still three commits" }
+      ]
+    },
+    {
+      "title": "Replacements are local unless you push them",
+      "why": "`refs/replace/*` is an ordinary ref namespace, so it needs an explicit refspec like notes do. That is a feature: a graft that helps you today does not have to become everyone's problem.",
+      "commands": ["git for-each-ref refs/replace", "sh -c 'echo \"push with: git push origin \\\"refs/replace/*:refs/replace/*\\\"\"'", "sh -c 'echo \"fetch with: git config --add remote.origin.fetch \\\"+refs/replace/*:refs/replace/*\\\"\"'"],
+      "expect": "Two replacement refs, both purely local."
+    },
+    {
+      "title": "Remove them and check the repository is untouched",
+      "why": "Deleting the replace refs restores the original view instantly. Nothing has to be recovered, because nothing was ever changed — which is why this is the safest tool in the rewriting toolbox.",
+      "commands": ["sh -c 'git replace -l | xargs -r -n1 git replace -d'", "git replace -l", "git log --oneline", "sh -c 'git rev-list --count HEAD'", "git fsck --full --no-dangling"],
+      "expect": "The typo is back, three commits, and a clean fsck. The replacement commits are still in the object database as dangling objects until gc runs — harmless, and proof nothing was ever destroyed.",
+      "verify": [
+        { "cmd": "git replace -l", "empty": true, "label": "all replacements were removed" },
+        { "cmd": "git log --oneline", "contains": "Iniital comit",
+          "label": "the original history is back, exactly as it always was" },
+        { "cmd": "sh -c 'git rev-list --count HEAD'", "equals": "3",
+          "label": "…with its original commit count" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git replace -l", "empty": true,
+      "label": "you removed the replacements cleanly",
+      "hint": "git replace -d <sha>" },
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "the repository is exactly as it started — replace never rewrites anything" },
+    { "cmd": "git log --oneline", "contains": "Iniital comit",
+      "label": "including the original commit message" },
+    { "cmd": "git fsck --full --no-dangling", "empty": true,
+      "label": "the object database is healthy (--no-dangling: the replacement commits are now unreferenced, which is expected)" },
+    { "cmd": "sh -c 'git log --oneline main | wc -l'", "cwd": "archive.git", "equals": "3",
+      "label": "the archive mirror still holds the real history" }
+  ],
+  "pitfalls": [
+    "Replacements are read-time only. A fetch, a push or a fresh clone sees the originals — anyone relying on a replacement without it being pushed sees different history from you.",
+    "`git replace` on a commit whose descendants you then rebase bakes the replacement in permanently, because the rebase reads through it. Remove replacements before rewriting.",
+    "`--no-replace-objects` is the escape hatch for debugging: it shows what is really there. Reach for it whenever git's output disagrees with another clone's.",
+    "The old `.git/info/grafts` file did something similar and is deprecated — it was silent, unshareable and easy to forget. `replace` is its supported successor.",
+    "Because replacements are invisible in normal output, document any you keep. A repository that shows different history to different people is a debugging nightmare."
+  ],
+  "cheatsheet": [
+    ["git replace <original> <replacement>", "substitute one object for another at read time"],
+    ["git replace -f ...", "overwrite an existing replacement"],
+    ["git replace -l", "list replacements"],
+    ["git replace -d <original>", "remove one"],
+    ["git --no-replace-objects <cmd>", "see the real objects"],
+    ["git commit-tree <tree> -p <parent> -m \"...\"", "build the replacement commit"],
+    ["git push origin 'refs/replace/*:refs/replace/*'", "share them, if you really mean to"]
+  ]
+}
