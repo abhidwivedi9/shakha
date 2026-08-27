@@ -1,0 +1,137 @@
+{
+  "id": "rewriting-fast-export-import",
+  "title": "Rebuild a repository through a stream you can edit",
+  "category": "rewriting",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 16,
+  "summary": "fast-export turns a repository into a plain-text stream of commits and blobs; fast-import turns a stream back into a repository. Between the two you can transform anything — which is how every git migration tool works.",
+  "concepts": ["fast-export", "fast-import", "the stream format", "transforming history in a pipe", "--no-data", "marks files"],
+  "mental_model": "The stream is the whole repository serialised: `blob`, `commit`, `reset` and `data` records in order. Anything you can do to a text stream, you can do to a repository — which is why this pair underpins the importers for every other version-control system.",
+  "danger": "The rebuilt repository has entirely new shas. This is a migration tool, not an edit — everyone re-clones afterwards.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"initial import from svn\"" },
+    { "write": { "path": "pump.py", "content": "RPM = 1600\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"add pump control\"" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "run": "git add -A" },
+    { "run": "git commit -q -m \"add dosing\"" },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" }
+  ],
+  "steps": [
+    {
+      "title": "Serialise the repository",
+      "why": "`fast-export --all` writes every commit, blob and ref to stdout as text. Read the first lines and the format is obvious: a record type, a length, then the data.",
+      "actions": [
+        { "run": "sh -c 'git fast-export --all > ../stream.fi'" }
+      ],
+      "commands": ["sh -c 'wc -l ../stream.fi'", "sh -c 'head -20 ../stream.fi'", "sh -c 'grep -c \"^commit \" ../stream.fi'"],
+      "expect": "A text file containing blob and commit records, and three commits.",
+      "verify": [
+        { "cmd": "sh -c 'grep -c \"^commit refs/heads/main\" ../stream.fi'", "equals": "3",
+          "label": "the whole repository serialised to a text stream",
+          "hint": "git fast-export --all > stream.fi" }
+      ]
+    },
+    {
+      "title": "Read the structure",
+      "why": "`reset` sets a ref, `commit` starts a commit, `data <n>` introduces a length-prefixed payload, `M 100644 :n path` marks a file. Once you can read this, you can transform it.",
+      "commands": ["sh -c 'grep -E \"^(reset|commit|author|committer|data|M |tag) \" ../stream.fi | head -20'", "sh -c 'grep \"^data\" ../stream.fi | head -5'"],
+      "expect": "The record types that make up the format."
+    },
+    {
+      "title": "Transform the stream in a pipe",
+      "why": "Here the commit messages are lower-case, an artefact of the original import. A one-line sed on the stream fixes every message at once — no rebase, no interactive todo list, no conflicts.",
+      "actions": [
+        { "run": "sh -c 'git fast-export --all | sed -E \"s/^(add|initial) /\\u&/\" > ../fixed.fi'" },
+        { "run": "git init -q -b main ../rebuilt" },
+        { "cwd": "rebuilt", "run": "sh -c 'git fast-import --quiet < ../fixed.fi'" }
+      ],
+      "commands": ["sh -c 'cd ../rebuilt && git log --oneline --all'", "sh -c 'cd ../rebuilt && git tag'", "git log --oneline"],
+      "expect": "The rebuilt repository has the same three commits with capitalised messages.",
+      "verify": [
+        { "cmd": "git log --format=%s main", "cwd": "rebuilt", "contains": "Add pump control",
+          "label": "every commit message was rewritten by editing the stream",
+          "hint": "git fast-export --all | sed ... | git fast-import" },
+        { "cmd": "sh -c 'git log --oneline main | wc -l'", "cwd": "rebuilt", "equals": "3",
+          "label": "…and the commit count is unchanged" }
+      ]
+    },
+    {
+      "title": "Confirm the trees are identical",
+      "why": "A migration must change metadata and nothing else. Compare the tree of each side's tip: same tree sha means every file is byte-for-byte identical, whatever happened to the commits.",
+      "commands": ["sh -c 'echo original: $(git rev-parse main^{tree})'", "sh -c 'echo rebuilt:  $(cd ../rebuilt && git rev-parse main^{tree})'", "sh -c 'test \"$(git rev-parse main^{tree})\" = \"$(cd ../rebuilt && git rev-parse main^{tree})\" && echo \"trees identical\"'", "sh -c 'echo original commit: $(git rev-parse main); echo rebuilt commit:  $(cd ../rebuilt && git rev-parse main)'"],
+      "expect": "Identical trees, different commit shas — exactly what a metadata rewrite should produce.",
+      "verify": [
+        { "cmd": "sh -c 'test \"$(git rev-parse main^{tree})\" = \"$(cd ../rebuilt && git rev-parse main^{tree})\" && echo same'",
+          "contains": "same",
+          "label": "the file content survived the round trip untouched" }
+      ]
+    },
+    {
+      "title": "Filter paths out during the import",
+      "why": "`--no-data` exports commits without file contents, which is how you inspect structure cheaply. For real filtering, `fast-export` plus a stream editor is what `filter-repo` automates — and knowing the mechanism means you are never stuck without the tool.",
+      "commands": ["sh -c 'git fast-export --all --no-data | head -12'", "sh -c 'git fast-export --all --no-data | grep -c \"^M \"'", "sh -c 'git fast-export --all | grep -c \"^blob\"'"],
+      "expect": "File marks with no blob payloads — the shape of history without its content."
+    },
+    {
+      "title": "Export a subset by revision range",
+      "why": "fast-export takes the same revision arguments as log. Exporting only part of history, then importing it into a fresh repository, is a truncation that needs no synthetic root commit.",
+      "actions": [
+        { "run": "sh -c 'git fast-export main~1..main > ../recent.fi'" },
+        { "run": "git init -q -b main ../recent" },
+        { "cwd": "recent", "run": "sh -c 'git fast-import --quiet < ../recent.fi'" }
+      ],
+      "commands": ["sh -c 'cd ../recent && git log --oneline --all'", "sh -c 'cd ../recent && git ls-files'"],
+      "expect": "A repository containing only the last commit's work, with a fresh root.",
+      "verify": [
+        { "cmd": "sh -c 'git log --oneline --all | wc -l'", "cwd": "recent", "equals": "1",
+          "label": "a revision range exported into a new repository",
+          "hint": "git fast-export <range> | git fast-import" }
+      ]
+    },
+    {
+      "title": "Know when to reach for it",
+      "why": "For removing a file, `filter-repo` is faster and safer. For anything it cannot express — renaming authors from a lookup table, merging two histories, importing from another system — the stream is the escape hatch, and it is always available.",
+      "commands": ["sh -c 'cd ../rebuilt && git log --format=\"%h %an %s\"'", "sh -c 'cd ../rebuilt && git fsck --full --no-dangling && echo \"rebuilt repository is healthy\"'"],
+      "verify": [
+        { "cmd": "git fsck --full --no-dangling", "cwd": "rebuilt", "empty": true,
+          "label": "the rebuilt repository is structurally sound" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --format=%s main", "cwd": "rebuilt", "contains": ["Add pump control", "Add dosing"],
+      "label": "every commit message was rewritten through the stream",
+      "hint": "git fast-export --all | sed ... | git fast-import" },
+    { "cmd": "sh -c 'test \"$(git rev-parse main^{tree})\" = \"$(cd ../rebuilt && git rev-parse main^{tree})\" && echo same'",
+      "contains": "same",
+      "label": "…while every file stayed byte-for-byte identical" },
+    { "cmd": "sh -c 'git log --oneline --all | wc -l'", "cwd": "recent", "equals": "1",
+      "label": "a partial export rebuilt a smaller repository" },
+    { "cmd": "git fsck --full --no-dangling", "cwd": "rebuilt", "empty": true,
+      "label": "the rebuilt repository passes fsck" },
+    { "cmd": "sh -c 'git log --oneline | wc -l'", "equals": "3",
+      "label": "the original repository was never modified — export only reads" }
+  ],
+  "pitfalls": [
+    "Every commit in the rebuilt repository has a new sha. Treat it as a migration: announce it, and have everyone re-clone.",
+    "`fast-import` writes into whatever repository it is run in. Always import into a fresh `git init`, never into a working repository.",
+    "Signatures do not survive the round trip — a signed tag comes out unsigned unless you re-sign it.",
+    "For common tasks (`--path`, `--invert-paths`, mailmap rewrites) `git filter-repo` is faster, safer and better tested. Reach for the raw stream only when it cannot express what you need.",
+    "Use `--export-marks` and `--import-marks` for incremental conversions; without them a second run re-imports everything and duplicates the history."
+  ],
+  "cheatsheet": [
+    ["git fast-export --all > stream.fi", "serialise the repository to text"],
+    ["git fast-export --all --no-data", "structure only, no file contents"],
+    ["git fast-export <range>", "export part of history"],
+    ["git fast-import < stream.fi", "rebuild a repository from a stream"],
+    ["... | sed ... | git fast-import", "transform history in a pipe"],
+    ["--export-marks / --import-marks", "incremental conversions"],
+    ["git filter-repo", "the tool that automates the common cases"]
+  ]
+}

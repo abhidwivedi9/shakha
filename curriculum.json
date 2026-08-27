@@ -81,7 +81,8 @@
         "workflows-long-branch-sync",
         "remotes-refspecs",
         "tags-signing-and-provenance",
-        "cherrypick-a-merge"
+        "cherrypick-a-merge",
+        "remotes-mirror-and-backup"
       ]
     },
     {
@@ -133,7 +134,8 @@
         "rewriting-purge-a-secret",
         "rewriting-shared-branch-fallout",
         "rewriting-extract-subdirectory",
-        "rewriting-squash-old-history"
+        "rewriting-squash-old-history",
+        "rewriting-fast-export-import"
       ]
     },
     {

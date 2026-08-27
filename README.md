@@ -7,7 +7,7 @@ Every scenario builds an actual repository on disk. The step buttons run actual
 actual files, and the checks grade the repo state — not which buttons you pressed.
 There is no simulation layer anywhere in this project.
 
-**123 scenarios across all 20 categories. All 123 pass their own checks.**
+**125 scenarios across all 20 categories. All 125 pass their own checks.**
 
 ```
 python shakhactl.py dashboard          # http://127.0.0.1:4100
@@ -92,7 +92,7 @@ against a real forge, because there is no difference.
 | 5 | Branching | 7 | ff vs no-ff, detached HEAD, rename/recover, `--contains`, hotfix branches, orphan branches |
 | 6 | Merging & conflicts | 6 | conflicts, abort and `-X`/`-s`, modify/delete, rerere, squash vs merge, custom drivers |
 | 7 | Rebase | 6 | interactive cleanup, `--onto`, conflict recovery, autosquash, splitting, stacks |
-| 8 | Remotes | 9 | tracking, prune, push rejection, `--force-with-lease`, forks, refspecs, offline bundles |
+| 8 | Remotes | 10 | tracking, prune, push rejection, `--force-with-lease`, forks, refspecs, offline bundles |
 | 9 | Undo & recovery | 6 | reflog rescue, revert, reverting a merge, wrong branch, fsck, dangling blobs |
 | 10 | Stash | 5 | basics with `-u`, conflicts and `stash branch`, `--keep-index`, recovery, cross-branch |
 | 11 | Tags & releases | 5 | lightweight vs annotated, publishing, describe, retagging damage, signing |
@@ -100,14 +100,14 @@ against a real forge, because there is no difference.
 | 13 | Submodules, worktrees, scale | 7 | worktrees, submodules, subtree, sparse-checkout, shallow vs partial, large files |
 | 14 | Hooks & automation | 5 | pre-commit, commit-msg, server-side pre-receive, pre-push, the post-* family |
 | 15 | Team workflows | 5 | GitHub flow, git flow, trunk-based, long-branch sync, the review loop |
-| 16 | Rewriting history | 5 | purging a secret, author identity, force-push fallout, subdirectory extraction, truncation |
+| 16 | Rewriting history | 6 | purging a secret, author identity, force-push fallout, subdirectory extraction, truncation |
 | 17 | Forensics & debugging | 5 | bisect, `bisect run`, reflog timelines, repo integrity, gc and maintenance |
 | 18 | Git internals | 6 | plumbing commits, the four object types, refs, packfiles, the hash chain |
 | 19 | Real-world incidents | 6 | merge ate my code, oversized push, force push over main, lockfiles, unrelated histories |
 | 20 | Release & CI/CD git | 5 | changelogs, monorepo path filters, detached HEAD in CI, semver, verifying deploys |
 
-24 beginner, 42 intermediate, 35 advanced, 22 expert. 862 runnable steps and
-551 final checks in total.
+24 beginner, 42 intermediate, 36 advanced, 23 expert. 877 runnable steps and
+561 final checks in total.
 
 ## Testing the catalog
 
@@ -130,9 +130,9 @@ Create `scenarios/<ID>/scenario.json`. No server code changes. See
 - **M0 — sandbox engine** ✅ real git execution, path guard, repo-state extractor
 - **M1 — dashboard shell** ✅ catalog, lesson pane, commit graph, refs, reflog
 - **M2 — the full loop** ✅ step buttons, free terminal, file editor, grading, progress
-- **M3–M6 — the catalog** ✅ all 20 categories, 123 scenarios, all passing
+- **M3–M6 — the catalog** ✅ all 20 categories, 125 scenarios, all passing
 - **M7 — navigation** ✅ level filters, unsolved-only, progress bar, generated cheatsheet
-- **M8 — the path** ✅ a six-stage curriculum covering all 123 scenarios, in the UI and the CLI
+- **M8 — the path** ✅ a six-stage curriculum covering all 125 scenarios, in the UI and the CLI
 
 Next: `explain.md` long-form notes for the expert scenarios, and a spaced-repetition
 mode that resurfaces scenarios you solved a while ago.

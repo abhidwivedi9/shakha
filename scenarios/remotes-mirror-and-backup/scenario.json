@@ -1,0 +1,165 @@
+{
+  "id": "remotes-mirror-and-backup",
+  "title": "Move a repository between hosts without losing a branch",
+  "category": "remotes",
+  "level": "advanced",
+  "order": 10,
+  "duration_min": 15,
+  "summary": "A clone brings one branch; a mirror brings every ref. Migrate a repository to a new server, keep an automated backup mirror in sync, and verify nothing was left behind.",
+  "concepts": ["clone --mirror", "push --mirror", "remote --mirror=fetch", "refs beyond branches", "verifying a migration", "backup rotation"],
+  "mental_model": "A normal clone is a working copy: one checked-out branch, remote-tracking refs, no tags you did not fetch. A mirror is a copy of the ref namespace itself — every branch, tag and note, laid out exactly as the server has them.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git tag -a v1.0 -m \"Release 1.0\"" },
+    { "run": "git switch -q -c release/1.x" },
+    { "write": { "path": "VERSION", "content": "1.0.0\n" } },
+    { "commit": { "message": "Cut the 1.x release line" } },
+    { "run": "git switch -q -c feature/dosing main" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Add dosing" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "run": "git tag -a v1.1 -m \"Release 1.1\"" },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git push -q origin --all" },
+    { "run": "git push -q origin --tags" },
+    { "run": "sh -c 'git notes add -m \"reviewed by the platform team\" HEAD'" },
+    { "run": "sh -c 'git push -q origin refs/notes/*:refs/notes/*'" }
+  ],
+  "steps": [
+    {
+      "title": "See everything the old server holds",
+      "why": "Three branches, two tags and a notes ref. A migration that moves only `main` is the commonest way to quietly lose a release branch — so start by counting what must arrive.",
+      "cwd": "origin",
+      "commands": ["git branch", "git tag", "git for-each-ref --format='%(refname)'", "sh -c 'git for-each-ref | wc -l'"],
+      "expect": "Six refs in total: three branches, two tags, one notes ref.",
+      "verify": [
+        { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "origin", "equals": "6",
+          "label": "the source server has six refs to migrate" }
+      ]
+    },
+    {
+      "title": "Watch a normal clone leave things behind",
+      "why": "A plain clone gives you one checked-out branch and remote-tracking copies of the others. Tags come along, but notes do not — and pushing this clone somewhere else would publish only what it happens to have locally.",
+      "commands": ["sh -c 'git clone -q \"file://$(cd ../origin.git && pwd)\" ../plain-clone'", "sh -c 'cd ../plain-clone && git branch'", "sh -c 'cd ../plain-clone && git for-each-ref refs/notes | wc -l'", "sh -c 'cd ../plain-clone && git for-each-ref | wc -l'"],
+      "expect": "One local branch and no notes ref.",
+      "verify": [
+        { "cmd": "sh -c 'git for-each-ref refs/notes | wc -l'", "cwd": "plain-clone", "equals": "0",
+          "label": "a normal clone did not bring the notes",
+          "hint": "notes need their own refspec — a mirror takes them automatically" }
+      ]
+    },
+    {
+      "title": "Take a mirror instead",
+      "why": "`--mirror` implies `--bare` and copies the ref namespace verbatim: every branch as a local branch, every tag, every note. It is the correct starting point for a migration or a backup.",
+      "commands": ["sh -c 'git clone -q --mirror \"file://$(cd ../origin.git && pwd)\" ../mirror.git'", "sh -c 'cd ../mirror.git && git for-each-ref --format=\"%(refname)\"'", "sh -c 'cd ../mirror.git && git for-each-ref | wc -l'"],
+      "expect": "All six refs, laid out exactly as on the server.",
+      "verify": [
+        { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "mirror.git", "equals": "6",
+          "label": "the mirror captured every ref",
+          "hint": "git clone --mirror <url>" },
+        { "cmd": "git for-each-ref refs/notes", "cwd": "mirror.git", "not_empty": true,
+          "label": "…including the notes a normal clone skipped" }
+      ]
+    },
+    {
+      "title": "Push the mirror to the new host",
+      "why": "`push --mirror` makes the destination match the source exactly — every ref created, updated or DELETED to match. That last word is why it must never be pointed at a live repository by accident.",
+      "actions": [
+        { "run": "git init --bare -q -b main ../new-host.git" },
+        { "cwd": "mirror.git", "run": "sh -c 'git push -q --mirror \"$(cd ../new-host.git && pwd)\"'" }
+      ],
+      "commands": ["sh -c 'cd ../new-host.git && git for-each-ref --format=\"%(refname)\"'", "sh -c 'cd ../new-host.git && git for-each-ref | wc -l'"],
+      "expect": "The new host holds exactly the same six refs.",
+      "verify": [
+        { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "new-host.git", "equals": "6",
+          "label": "every ref reached the new host",
+          "hint": "git push --mirror <new-url>" }
+      ]
+    },
+    {
+      "title": "Verify the migration properly",
+      "why": "Compare ref lists and the shas they point at, not just the counts. A migration is only done when both sides resolve every ref to the same object.",
+      "commands": ["sh -c 'cd ../origin.git && git for-each-ref --format=\"%(objectname) %(refname)\" | sort > ../src-refs.txt'", "sh -c 'cd ../new-host.git && git for-each-ref --format=\"%(objectname) %(refname)\" | sort > ../dst-refs.txt'", "sh -c 'diff ../src-refs.txt ../dst-refs.txt && echo \"IDENTICAL: every ref points at the same object\"'", "sh -c 'cd ../new-host.git && git log --oneline main | head -3'"],
+      "expect": "An empty diff — the two repositories are ref-for-ref identical.",
+      "verify": [
+        { "cmd": "sh -c 'diff ../src-refs.txt ../dst-refs.txt > /dev/null && echo identical'",
+          "contains": "identical",
+          "label": "source and destination resolve every ref to the same object",
+          "hint": "compare for-each-ref output on both sides" }
+      ]
+    },
+    {
+      "title": "Keep the mirror updated as a backup",
+      "why": "A mirror clone configured with `remote.origin.fetch = +refs/*:refs/*` and `--mirror=fetch` can be refreshed with a plain `git fetch`. That one command in a cron job is a complete off-site backup.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add alerts after the migration\"" },
+        { "run": "git push -q origin main" },
+        { "run": "git tag -a v1.2 -m \"Release 1.2\"" },
+        { "run": "git push -q origin v1.2" }
+      ],
+      "commands": ["sh -c 'cd ../mirror.git && git fetch -q --prune && git for-each-ref | wc -l'", "sh -c 'cd ../mirror.git && git log --oneline main | head -2'", "sh -c 'cd ../mirror.git && git tag'"],
+      "expect": "The mirror picks up the new commit and the new tag with one fetch.",
+      "verify": [
+        { "cmd": "git tag", "cwd": "mirror.git", "contains": "v1.2",
+          "label": "a plain fetch refreshed the backup mirror",
+          "hint": "a --mirror clone fetches every ref by default" }
+      ]
+    },
+    {
+      "title": "Prove the backup is restorable",
+      "why": "A backup nobody has restored is a hope, not a backup. Clone from the mirror and check the branch count, tags and notes all survive the round trip.",
+      "commands": ["sh -c 'git clone -q --mirror \"$(cd ../mirror.git && pwd)\" ../restored.git'", "sh -c 'cd ../restored.git && git for-each-ref --format=\"%(refname)\" | wc -l'", "sh -c 'cd ../restored.git && git log --oneline main | wc -l'", "sh -c 'cd ../restored.git && git for-each-ref refs/notes'"],
+      "verify": [
+        { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "restored.git", "equals": "7",
+          "label": "the restored copy has every ref, including the new tag",
+          "hint": "clone --mirror from the mirror" },
+        { "cmd": "git for-each-ref refs/notes", "cwd": "restored.git", "not_empty": true,
+          "label": "…and the notes survived two hops" }
+      ]
+    },
+    {
+      "title": "Repoint your working clone and finish",
+      "why": "The migration ends when developers point at the new host. It is one config change each — the object database does not care which server it came from.",
+      "commands": ["sh -c 'git remote set-url origin \"$(cd ../new-host.git && pwd)\"'", "git remote -v", "git fetch -q origin", "git status -sb", "git log --oneline -2"],
+      "verify": [
+        { "cmd": "sh -c 'git remote get-url origin'", "contains": "new-host",
+          "label": "your clone now points at the new host" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "new-host.git", "equals": "6",
+      "label": "the migration moved every ref, not just the default branch",
+      "hint": "git clone --mirror then git push --mirror" },
+    { "cmd": "sh -c 'diff ../src-refs.txt ../dst-refs.txt > /dev/null && echo identical'",
+      "contains": "identical",
+      "label": "the migration was verified ref-by-ref, not assumed" },
+    { "cmd": "git tag", "cwd": "mirror.git", "contains": "v1.2",
+      "label": "the backup mirror stays current with a plain fetch" },
+    { "cmd": "sh -c 'git for-each-ref | wc -l'", "cwd": "restored.git", "equals": "7",
+      "label": "the backup was actually restored and checked" },
+    { "cmd": "sh -c 'git remote get-url origin'", "contains": "new-host",
+      "label": "the working clone was repointed at the new host" }
+  ],
+  "pitfalls": [
+    "`git push --mirror` DELETES refs on the destination that the source does not have. Never point it at a repository that has anything the source lacks.",
+    "A normal clone does not bring notes, and brings only the tags reachable from what it fetched. For a migration, always mirror.",
+    "`--mirror` clones are bare and have no working tree. Do not try to develop in one; clone from it instead.",
+    "Verify with `for-each-ref` output on both sides, not by counting branches in a web UI. Hidden refs — notes, replace, pull-request refs — are exactly what gets lost.",
+    "Some forges keep pull-request refs under `refs/pull/*`. A mirror copies them, which is usually what you want for an archive and usually not what you want on the new host."
+  ],
+  "cheatsheet": [
+    ["git clone --mirror <url>", "a bare copy of the entire ref namespace"],
+    ["git push --mirror <url>", "make the destination match exactly — including deletions"],
+    ["git for-each-ref --format='%(objectname) %(refname)'", "the list to diff when verifying"],
+    ["git fetch --prune", "refresh a mirror clone; that is your backup job"],
+    ["git remote set-url origin <new>", "repoint a working clone after migration"],
+    ["git clone --mirror <mirror> <restored>", "prove the backup restores"]
+  ]
+}

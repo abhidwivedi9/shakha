@@ -57,16 +57,32 @@ class SandboxError(Exception):
 
 
 def _force_rm(path: Path) -> None:
-    """rmtree that survives git read-only object files on Windows."""
+    """rmtree that survives read-only object files and transient locks.
+
+    Git's object files are read-only, and a scenario that starts a background
+    helper (fsmonitor, for instance) can hold a handle open for a moment after
+    it is told to stop -- so retry briefly before giving up.
+    """
     def on_error(func, p, _exc):
         os.chmod(p, stat.S_IWRITE)
         func(p)
 
-    if path.exists():
+    if not path.exists():
+        return
+
+    last = None
+    for attempt in range(5):
         try:
-            shutil.rmtree(path, onexc=on_error)
-        except TypeError:  # Python < 3.12
-            shutil.rmtree(path, onerror=lambda f, p, e: (os.chmod(p, stat.S_IWRITE), f(p)))
+            try:
+                shutil.rmtree(path, onexc=on_error)
+            except TypeError:  # Python < 3.12
+                shutil.rmtree(path, onerror=lambda f, p, e: (os.chmod(p, stat.S_IWRITE), f(p)))
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(0.2 * (attempt + 1))
+
+    raise SandboxError("could not remove %s: %s" % (path, last))
 
 
 class Sandbox:

@@ -72,8 +72,8 @@
     {
       "title": "Know the one that needs a daemon",
       "why": "`core.fsmonitor true` uses the built-in filesystem monitor so git is told which files changed instead of statting all of them. It is the biggest win of all on a huge tree, and the only one here with a background process attached.",
-      "commands": ["sh -c 'git config core.fsmonitor true && echo \"fsmonitor enabled\"'", "sh -c 'git config --get core.fsmonitor'", "sh -c 'git status --short > /dev/null 2>&1; echo \"status still works\"'", "sh -c 'git config --unset core.fsmonitor && echo \"disabled again for this sandbox\"'"],
-      "expect": "It configures cleanly; on a real large repository this is where the seconds disappear."
+      "commands": ["sh -c 'git config core.fsmonitor true && echo \"fsmonitor enabled\"'", "sh -c 'git config --get core.fsmonitor'", "sh -c 'git status --short > /dev/null 2>&1; echo \"status still works\"'", "sh -c 'git config --unset core.fsmonitor && echo \"disabled again for this sandbox\"'", "sh -c 'git fsmonitor--daemon stop 2>/dev/null; echo \"daemon stopped\"'"],
+      "expect": "It configures cleanly; on a real large repository this is where the seconds disappear. Note the daemon must be stopped when you turn it off — it holds file handles open, which is why a repository with fsmonitor running can refuse to be deleted."
     },
     {
       "title": "Confirm nothing about the repository changed",
