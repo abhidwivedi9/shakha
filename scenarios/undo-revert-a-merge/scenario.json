@@ -1,0 +1,133 @@
+{
+  "id": "undo-revert-a-merge",
+  "title": "Revert a merge — and understand why re-merging then does nothing",
+  "category": "undo",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 15,
+  "summary": "A merged feature broke production. Revert the merge with -m, then discover the trap: merging that branch again brings back nothing, because git thinks it is already in.",
+  "concepts": ["revert -m", "mainline parent", "merge reachability", "revert the revert", "re-merging"],
+  "mental_model": "Reverting a merge undoes its *content* but not its *topology* — the branch stays reachable, so git still considers it merged. Fixing the branch and merging again therefore brings in only the new commits, not the ones the revert undid.",
+  "danger": "This is the most common way a feature silently half-disappears: reverted merge, branch fixed, re-merged, and the original work never comes back.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c feature/payments" },
+    { "write": { "path": "payments.py", "content": "def charge(amount):\n    return amount\n" } },
+    { "commit": { "message": "Add payment charging" } },
+    { "write": { "path": "payments.py", "content": "def charge(amount):\n    return amount\n\n\ndef refund(amount):\n    return -amount\n" } },
+    { "commit": { "message": "Add refunds" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "README.md", "content": "# Store\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "run": "git merge -q --no-ff -m \"Merge payments feature\" feature/payments" },
+    { "write": { "path": "app.py", "content": "print('v2')\n" } },
+    { "commit": { "message": "Bump banner" } }
+  ],
+  "steps": [
+    {
+      "title": "Find the merge that shipped the problem",
+      "why": "A merge commit has two parents. `--parents` prints them, and that is what makes reverting it different from reverting anything else — git has to be told which side is 'the mainline'.",
+      "commands": ["git log --oneline --graph -5", "sh -c 'git log --merges -1 --format=\"%h %p %s\"'", "ls"]
+    },
+    {
+      "title": "Watch a plain revert refuse",
+      "why": "Without `-m`, git cannot know whether 'undo this merge' means 'remove the feature' or 'remove main's work'. It refuses rather than guessing — one of the few places git asks instead of assuming.",
+      "commands": ["sh -c 'git revert --no-edit $(git log --merges -1 --format=%H)'"],
+      "expect": "error: commit ... is a merge but no -m option was given."
+    },
+    {
+      "title": "Revert against the first parent",
+      "why": "`-m 1` means 'keep the first parent's line, undo what the other side brought'. On a merge into main, parent 1 is always main — so `-m 1` is nearly always what you want.",
+      "commands": ["sh -c 'git revert --no-edit -m 1 $(git log --merges -1 --format=%H)'", "git log --oneline --graph -4", "ls"],
+      "expect": "payments.py is gone, and a Revert commit sits on top.",
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": "payments.py",
+          "label": "the merged feature's content is undone",
+          "hint": "git revert -m 1 <merge-sha>" },
+        { "cmd": "git log --oneline", "not_contains": "reset",
+          "label": "…without rewriting any history" }
+      ]
+    },
+    {
+      "title": "Fix the branch",
+      "why": "The feature was not wrong in principle, only broken. Add the missing validation on the branch, as you would after any production revert.",
+      "actions": [
+        { "run": "git switch -q feature/payments" },
+        { "write": { "path": "payments.py", "content": "def charge(amount):\n    if amount <= 0:\n        raise ValueError('amount must be positive')\n    return amount\n\n\ndef refund(amount):\n    return -amount\n" } },
+        { "run": "git commit -q -a -m \"Validate charge amounts\"" }
+      ],
+      "commands": ["git log --oneline -3", "git switch main"]
+    },
+    {
+      "title": "Merge it again and watch it go wrong",
+      "why": "Here is the trap. Git considers the old commits already merged — the revert changed content, not reachability — so it tries to apply only the new validation commit onto a tree where the file no longer exists. The result is a modify/delete conflict, not the feature coming back.",
+      "commands": ["git merge --no-ff -m \"Merge fixed payments feature\" feature/payments", "git status --short"],
+      "expect": "A conflict, and not one that resolving would fix: the original charge and refund code is simply not in this merge.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "payments.py",
+          "label": "re-merging produced a conflict instead of restoring the feature" }
+      ]
+    },
+    {
+      "title": "Abort — this is the wrong route entirely",
+      "why": "No resolution of this conflict brings the original code back, because git is not offering it. Abort and fix the actual problem, which is the revert commit sitting in main's history.",
+      "commands": ["git merge --abort", "git status --short", "ls"],
+      "expect": "Back to the reverted state: clean tree, no payments.py.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the failed merge is fully undone" }
+      ]
+    },
+    {
+      "title": "Undo the revert instead",
+      "why": "The correct fix is to revert the revert: that reinstates the original content, so main once again matches what git believes about reachability. Now merging works from a truthful base.",
+      "commands": ["sh -c 'git revert --no-edit $(git log -1 --format=%H --grep=\"Revert .Merge payments\")'", "cat payments.py", "git log --oneline -3"],
+      "expect": "charge() and refund() are back.",
+      "verify": [
+        { "cmd": "cat payments.py", "contains": ["def charge", "def refund"],
+          "label": "the original feature content is restored",
+          "hint": "git revert the revert commit" }
+      ]
+    },
+    {
+      "title": "Now merge the fixed branch, successfully",
+      "why": "With the content restored, the merge does what you expected the first time: it brings in the validation commit and nothing conflicts. The order of operations was the whole problem.",
+      "commands": ["git merge --no-ff -m \"Merge fixed payments feature\" feature/payments", "cat payments.py", "git status --short"],
+      "expect": "charge(), refund() and the validation, all present.",
+      "verify": [
+        { "cmd": "cat payments.py", "contains": "amount must be positive",
+          "label": "the fix merged in cleanly once the revert was undone" }
+      ]
+    },
+    {
+      "title": "Read the history you produced",
+      "why": "Merged, reverted, fixed, restored, merged again — every step recorded, nothing rewritten, and anyone reading it can reconstruct exactly what happened during the incident.",
+      "commands": ["git log --oneline --graph -8", "git log --oneline --merges"]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat payments.py", "contains": ["def charge", "def refund", "amount must be positive"],
+      "label": "the feature is fully back, original code and fix together",
+      "hint": "revert -m 1 to undo the merge, then revert THAT commit to restore it" },
+    { "cmd": "git log --oneline", "contains": "Revert",
+      "label": "the revert and its undo are both recorded in history" },
+    { "cmd": "git log --oneline main", "not_contains": "reset",
+      "label": "nothing was rewritten — this was all additive" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "`-m 1` is the mainline parent — the branch you merged INTO. `-m 2` undoes main's side instead, which is almost never what you want.",
+    "After reverting a merge, the branch still counts as merged. Always revert the revert before merging it again, or fix forward on a fresh branch.",
+    "An alternative is to fix forward: new branch, new commits, normal merge. On a busy repository this is often less confusing than the revert-the-revert dance.",
+    "Squash-merged branches do not have this problem, because there is no merge commit — and no reachability to confuse."
+  ],
+  "cheatsheet": [
+    ["git log --merges", "find merge commits"],
+    ["git log -1 --format='%h %p'", "a commit and its parents"],
+    ["git revert -m 1 <merge-sha>", "undo a merge, keeping the mainline"],
+    ["git revert <revert-sha>", "undo the revert, restoring the content"],
+    ["git show <merge-sha>", "what a merge commit actually contains"],
+    ["git branch --merged", "why git still thinks the branch is in"]
+  ]
+}

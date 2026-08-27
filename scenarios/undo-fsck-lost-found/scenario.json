@@ -1,0 +1,111 @@
+{
+  "id": "undo-fsck-lost-found",
+  "title": "The reflog is gone too. Find the commit with fsck.",
+  "category": "undo",
+  "level": "expert",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "Last resort recovery: a commit nothing points at, in a repository whose reflog has been expired. Walk the object database directly and pull it back from nothing.",
+  "concepts": ["git fsck --lost-found", "dangling commits", "unreachable objects", "reflog expire", "cat-file"],
+  "mental_model": "Git never edits objects, only ever adds them. A commit becomes unreachable when no ref or reflog entry mentions it, but it stays in `.git/objects` until garbage collection actually prunes it. `fsck` walks that store and reports what nothing points at.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c experiment/optimiser" },
+    { "write": { "path": "optimiser.py", "content": "def optimise(schedule):\n    return sorted(schedule, key=lambda s: s['cost'])\n" } },
+    { "commit": { "message": "Add the schedule optimiser" } },
+    { "write": { "path": "optimiser.py", "content": "def optimise(schedule):\n    ranked = sorted(schedule, key=lambda s: s['cost'])\n    return [s for s in ranked if s['cost'] < 100]\n" } },
+    { "commit": { "message": "Filter expensive schedules in the optimiser" } },
+    { "run": "git switch -q main" },
+    { "run": "git branch -D experiment/optimiser" },
+    { "run": "git reflog expire --expire=now --expire-unreachable=now --all" }
+  ],
+  "steps": [
+    {
+      "title": "Confirm how bad it is",
+      "why": "The branch was force-deleted and the reflog expired. Every normal recovery route is closed: `git log --all` shows nothing, and the reflog is empty.",
+      "commands": ["git log --oneline --all", "git reflog", "git branch -a"],
+      "expect": "One commit, no reflog entries, no experiment branch."
+    },
+    {
+      "title": "Ask the object database directly",
+      "why": "`fsck --lost-found` walks every object in `.git/objects` and reports the ones no ref reaches. The commits are still there — nothing has pruned them yet.",
+      "commands": ["git fsck --lost-found", "git fsck --unreachable --no-reflogs"],
+      "expect": "dangling commit <sha> lines — your deleted work.",
+      "verify": [
+        { "cmd": "git fsck --lost-found", "contains": "dangling commit",
+          "label": "unreachable commits are still in the object store" }
+      ]
+    },
+    {
+      "title": "Look at what you found",
+      "why": "A dangling sha is a normal commit; every read command works on it. Inspect before restoring — `fsck` will also list genuinely worthless objects from aborted operations.",
+      "commands": ["sh -c 'git fsck --lost-found 2>/dev/null | grep \"dangling commit\" | head -3'", "sh -c 'for sha in $(git fsck --lost-found 2>/dev/null | grep \"dangling commit\" | cut -d\" \" -f3); do echo \"== $sha\"; git log -1 --format=\"%h %s\" $sha; done'"],
+      "expect": "Both optimiser commits, identifiable by their messages."
+    },
+    {
+      "title": "Restore the branch",
+      "why": "Point a branch at the newest dangling commit and the whole chain becomes reachable again — its parent comes back with it, because a commit references its history.",
+      "actions": [
+        { "run": "sh -c 'git branch experiment/optimiser $(git log -1 --format=%H $(git fsck --lost-found 2>/dev/null | grep \"dangling commit\" | cut -d\" \" -f3 | head -20 | xargs -I{} git log -1 --format=\"%ct %H\" {} | sort -rn | head -1 | cut -d\" \" -f2))'" }
+      ],
+      "commands": ["git log --oneline experiment/optimiser", "git branch -a"],
+      "expect": "The branch is back, with both commits.",
+      "verify": [
+        { "cmd": "git log --oneline experiment/optimiser", "contains": "Filter expensive schedules",
+          "label": "the branch is restored at the newest recovered commit",
+          "hint": "git branch <name> <dangling-sha>" }
+      ]
+    },
+    {
+      "title": "Confirm the content really came back",
+      "why": "Not just the commit metadata — the trees and blobs were in the object store too. Check out the file and read it.",
+      "commands": ["git switch experiment/optimiser", "cat optimiser.py", "git log --oneline"],
+      "verify": [
+        { "cmd": "cat optimiser.py", "contains": "cost'] < 100",
+          "label": "the file content was recovered intact" }
+      ]
+    },
+    {
+      "title": "See what would have destroyed it",
+      "why": "`gc --prune=now` deletes unreachable objects immediately. Run it before recovery and there is genuinely nothing left — this is the one operation that makes git forget. Here the commits are reachable again, so gc leaves them alone.",
+      "commands": ["git gc --prune=now --quiet", "git log --oneline experiment/optimiser", "git fsck --lost-found"],
+      "expect": "The branch survives gc, because it is reachable now.",
+      "verify": [
+        { "cmd": "git log --oneline experiment/optimiser", "lines": 3,
+          "label": "the recovered branch survived garbage collection" }
+      ]
+    },
+    {
+      "title": "The habit that makes this unnecessary",
+      "why": "Before any destructive operation, drop a branch or tag on the tip. It costs one command and turns 'walk the object database' into 'switch branches'.",
+      "commands": ["git switch main", "git branch -vv", "git log --oneline --all --decorate --graph"]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline experiment/optimiser", "contains": ["Add the schedule optimiser", "Filter expensive schedules"],
+      "label": "both deleted commits were recovered from the object database",
+      "hint": "git fsck --lost-found, then git branch <name> <sha>" },
+    { "cmd": "git show experiment/optimiser:optimiser.py", "contains": "cost'] < 100",
+      "label": "the file content came back with them" },
+    { "cmd": "git log --oneline experiment/optimiser", "lines": 3,
+      "label": "the branch is complete, including its parent commits" },
+    { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "main",
+      "label": "you finished back on main" }
+  ],
+  "pitfalls": [
+    "`git gc --prune=now` genuinely deletes unreachable objects. Do not run it while trying to recover something.",
+    "`fsck` also reports dangling blobs and trees from interrupted operations. Dangling commits are the interesting ones.",
+    "Automatic gc runs on its own when loose objects pile up, so 'the commits stay for 90 days' assumes the default `gc.pruneExpire`.",
+    "A repository cloned after the loss will not have the objects at all. Recovery must happen in the clone where the work was made."
+  ],
+  "cheatsheet": [
+    ["git fsck --lost-found", "commits and blobs nothing points at"],
+    ["git fsck --unreachable --no-reflogs", "…ignoring the reflog as a source of reachability"],
+    ["git log -1 <dangling-sha>", "inspect a found commit"],
+    ["git branch <name> <sha>", "make it reachable again"],
+    ["git cat-file -p <sha>", "read any object directly"],
+    ["git gc --prune=now", "the command that actually deletes them — avoid mid-rescue"]
+  ]
+}

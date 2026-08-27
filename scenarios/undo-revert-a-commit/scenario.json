@@ -1,0 +1,107 @@
+{
+  "id": "undo-revert-a-commit",
+  "title": "Undo a commit that is already on main",
+  "category": "undo",
+  "level": "beginner",
+  "order": 2,
+  "duration_min": 12,
+  "summary": "A bad commit shipped. Reset would rewrite shared history; revert adds a new commit that undoes it. Learn which to use, and how to revert something in the middle of history.",
+  "concepts": ["git revert", "revert vs reset", "shared history", "reverting an old commit", "revert --no-commit"],
+  "mental_model": "`reset` moves a branch pointer — fine for commits nobody has seen. `revert` creates a new commit whose diff is the inverse of an old one — the only honest option once other people have pulled.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "pricing.py", "content": "TAX_RATE = 0.20\n\n\ndef total(net):\n    return net * (1 + TAX_RATE)\n" } },
+    { "commit": { "message": "Add pricing" } },
+    { "write": { "path": "pricing.py", "content": "TAX_RATE = 0.02\n\n\ndef total(net):\n    return net * (1 + TAX_RATE)\n" } },
+    { "commit": { "message": "Adjust tax rate" } },
+    { "write": { "path": "shipping.py", "content": "FLAT_RATE = 4.99\n" } },
+    { "commit": { "message": "Add shipping costs" } },
+    { "write": { "path": "README.md", "content": "# Store\n" } },
+    { "commit": { "message": "Add readme" } },
+    { "init_origin": true, "push_branch": "main" }
+  ],
+  "steps": [
+    {
+      "title": "Find the bad commit",
+      "why": "The tax rate went from 20% to 2% — a typo that has been live for three commits. It is not the tip, and it has been pushed, which rules out both amend and reset.",
+      "commands": ["git log --oneline", "git log -p -1 --grep=\"Adjust tax rate\"", "cat pricing.py"]
+    },
+    {
+      "title": "See why reset is the wrong tool here",
+      "why": "Reset would move main backwards, discarding the two good commits after it and rewriting history everyone has already pulled. Look at what it would cost before ruling it out.",
+      "commands": ["git log --oneline main..origin/main", "git log --oneline origin/main..main", "git status -sb"],
+      "expect": "You and origin are in sync — so any rewrite means a force push."
+    },
+    {
+      "title": "Revert it",
+      "why": "`git revert <sha>` computes the inverse diff and commits it. History gains a commit rather than losing one, so nobody else has to do anything. The default message names what was reverted.",
+      "commands": ["sh -c 'git revert --no-edit $(git log -1 --format=%H --grep=\"Adjust tax rate\")'", "git log --oneline", "cat pricing.py"],
+      "expect": "TAX_RATE back to 0.20, with a new 'Revert...' commit on top.",
+      "verify": [
+        { "cmd": "cat pricing.py", "contains": "TAX_RATE = 0.20",
+          "label": "the bad change is undone", "hint": "git revert <sha of the tax commit>" },
+        { "cmd": "git log --oneline", "lines": 5,
+          "label": "history grew by one commit instead of losing three" }
+      ]
+    },
+    {
+      "title": "Confirm the later commits survived",
+      "why": "Revert only inverts the one commit you named. Shipping costs and the readme are untouched — which is precisely why it is safe to run on a busy branch.",
+      "commands": ["ls", "git log --oneline --stat -1", "git show --stat HEAD"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": ["shipping.py", "README.md"],
+          "label": "commits after the reverted one are unaffected" }
+      ]
+    },
+    {
+      "title": "Revert without committing",
+      "why": "`--no-commit` stages the inverse and stops, so you can revert several commits and land one combined commit, or adjust the result before committing. Handy when the straight inverse is not quite right.",
+      "commands": ["sh -c 'git revert --no-commit $(git log -1 --format=%H --grep=\"Add shipping costs\")'", "git status --short", "git diff --staged --stat"],
+      "expect": "shipping.py staged for deletion, no commit made."
+    },
+    {
+      "title": "Change your mind cleanly",
+      "why": "`git revert --abort` unwinds an in-progress revert exactly like the merge and rebase equivalents. Every multi-step git operation has this escape hatch.",
+      "commands": ["git revert --abort", "git status --short", "ls"],
+      "expect": "shipping.py back, tree clean.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the aborted revert left no trace" }
+      ]
+    },
+    {
+      "title": "Push the fix and read the history",
+      "why": "A normal fast-forward push — no force, no coordination. The history now tells the truth: the change was made, then deliberately undone, and both facts are recorded.",
+      "commands": ["git push origin main", "git log --oneline --format='%h %s' -3", "git status -sb"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Revert",
+          "label": "the revert reached the server without a force push" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "cat pricing.py", "contains": "TAX_RATE = 0.20",
+      "label": "the bad tax rate is undone",
+      "hint": "git revert <sha>, not git reset — the commit was already pushed" },
+    { "cmd": "git ls-files", "contains": ["shipping.py", "README.md"],
+      "label": "the good commits that followed it are intact" },
+    { "cmd": "git log --oneline", "lines": 5,
+      "label": "history grew by a revert commit rather than being rewritten" },
+    { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Revert",
+      "label": "the server has the revert, pushed as a fast-forward" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Reverting a commit does not remove it from history. Anything sensitive in it is still there — revert is not redaction.",
+    "If the code has changed since, the inverse diff may conflict. Resolve it like any conflict, then `git revert --continue`.",
+    "`git revert HEAD~3` reverts the commit three back, not the last three. For a range, use `git revert <old>..<new>`.",
+    "Reverting a revert is a normal thing to do and reads perfectly well in history — `git revert <sha-of-revert>`."
+  ],
+  "cheatsheet": [
+    ["git revert <sha>", "new commit that undoes an old one"],
+    ["git revert --no-edit <sha>", "…without opening an editor"],
+    ["git revert --no-commit <sha>", "stage the inverse, do not commit yet"],
+    ["git revert <old>..<new>", "revert a range of commits"],
+    ["git revert --abort", "back out of an in-progress revert"],
+    ["git revert --continue", "after resolving a revert conflict"]
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "id": "undo-wrong-branch-commits",
+  "title": "You committed three times to main by mistake",
+  "category": "undo",
+  "level": "intermediate",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "Feature work landed on main instead of a branch. Move it to where it belongs and put main back, without losing a line — the single most common git accident there is.",
+  "concepts": ["branch at HEAD", "reset --hard to origin", "cherry-pick a range", "reflog safety", "branch -f"],
+  "mental_model": "The commits are fine — only the branch pointer is wrong. Create a branch here (naming the work), then move main back to where it should be. Two pointer moves, no content touched.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml\n" } },
+    { "commit": { "message": "Add dosing module" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "commit": { "message": "Calibrate dosing" } },
+    { "write": { "path": "dosing_test.py", "content": "def test_dose():\n    assert True\n" } },
+    { "commit": { "message": "Test dosing" } }
+  ],
+  "steps": [
+    {
+      "title": "Confirm the damage — and that it is local",
+      "why": "Three commits ahead of origin/main. Nothing has been pushed, which means this is a pointer problem and not a history-rewrite problem. Check this before anything else: if they were pushed, the answer would be revert instead.",
+      "commands": ["git log --oneline --decorate", "git status -sb", "git log --oneline origin/main..main"],
+      "expect": "ahead 3, and the three feature commits listed.",
+      "verify": [
+        { "cmd": "git log --oneline origin/main..main", "lines": 3,
+          "label": "three unpushed commits sit on main" }
+      ]
+    },
+    {
+      "title": "Name the work before moving anything",
+      "why": "`git branch feature/dosing` creates a branch at your current position without moving you. The commits now have a second name — so whatever happens to main next, they are safe.",
+      "commands": ["git branch feature/dosing", "git log --oneline --all --decorate --graph", "git branch -vv"],
+      "expect": "Both main and feature/dosing point at the same commit.",
+      "verify": [
+        { "cmd": "git log --oneline feature/dosing", "lines": 4,
+          "label": "the branch holds all the work" }
+      ]
+    },
+    {
+      "title": "Move main back to where the server has it",
+      "why": "`reset --hard origin/main` moves main's pointer back three commits and matches the working tree to it. The commits are not deleted — feature/dosing still points at them, which is why step 2 came first.",
+      "commands": ["git reset --hard origin/main", "git log --oneline --all --decorate --graph", "git status -sb", "ls"],
+      "expect": "main is in sync with origin, and the dosing files are gone from the working tree.",
+      "verify": [
+        { "cmd": "git log --oneline main", "lines": 1,
+          "label": "main is back to the released state" },
+        { "cmd": "git status -sb", "not_contains": "ahead",
+          "label": "…and in sync with origin" }
+      ]
+    },
+    {
+      "title": "Continue on the branch where you meant to be",
+      "why": "Switch to the feature branch and the files are back. Nothing was recreated — you simply moved to the pointer that still names those commits.",
+      "commands": ["git switch feature/dosing", "ls", "git log --oneline", "cat dosing.py"],
+      "verify": [
+        { "cmd": "git ls-files", "contains": ["dosing.py", "dosing_test.py"],
+          "label": "the work is intact on its own branch" }
+      ]
+    },
+    {
+      "title": "The variant: copying commits somewhere else instead",
+      "why": "When the commits belong on a branch that already exists, cherry-pick a range onto it. `A..B` works here exactly as it does in log — but the range must start where the target branch already agrees, or you get modify/delete conflicts from commits that edit files the target has never seen.",
+      "actions": [
+        { "run": "git switch -q main" },
+        { "run": "git switch -q -c feature/second" }
+      ],
+      "commands": ["git cherry-pick main..feature/dosing", "git log --oneline", "git switch main"],
+      "expect": "All three commits copied across with new shas. Starting the range at feature/dosing~2 instead would conflict, because that skips the commit that creates dosing.py.",
+      "verify": [
+        { "cmd": "git log --oneline feature/second", "lines": 4,
+          "label": "a commit range was cherry-picked onto another branch" }
+      ]
+    },
+    {
+      "title": "Know the escape hatch",
+      "why": "Had you run the reset *before* creating the branch, the reflog would still have the commits — `git reset --hard HEAD@{1}` or `git branch rescue <sha>` gets them back. The branch-first order just means you never have to.",
+      "commands": ["git reflog -8", "git log --oneline --all --decorate --graph"]
+    },
+    {
+      "title": "Prevent the next one",
+      "why": "Most people who do this once do it weekly. A `main` branch that refuses direct commits — via a pre-commit hook locally or branch protection on the server — turns the accident into an error message.",
+      "commands": ["git branch -vv", "git status -sb"],
+      "expect": "Nothing to run here; the fix is a hook or server-side protection."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "lines": 1,
+      "label": "main is back to the released state",
+      "hint": "branch first, then git reset --hard origin/main" },
+    { "cmd": "git log --oneline feature/dosing", "lines": 4,
+      "label": "the misplaced work lives on a feature branch" },
+    { "cmd": "git status -sb", "not_contains": "ahead",
+      "label": "main is in sync with origin again" },
+    { "cmd": "git log --oneline feature/second", "lines": 4,
+      "label": "you also copied a commit range with cherry-pick",
+      "hint": "git cherry-pick main..feature/dosing — start the range where the target agrees" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "Create the branch BEFORE resetting. Doing it the other way round works only because of the reflog, and only for 90 days.",
+    "`git reset --hard` discards uncommitted changes too. Stash them first if you have any.",
+    "If the commits were already pushed to a shared main, this whole approach is wrong — use `git revert` instead, or you force-push over other people.",
+    "A cherry-pick range that starts mid-feature drops the commits that created the files, producing modify/delete conflicts. Start at the branch point.",
+    "`git switch -c <branch>` moves you as well as creating the branch. Plain `git branch <name>` leaves you where you are, which is what you want mid-rescue."
+  ],
+  "cheatsheet": [
+    ["git branch <name>", "name the current commit without moving"],
+    ["git reset --hard origin/main", "put main back to the server's state"],
+    ["git switch <branch>", "continue where you meant to be"],
+    ["git cherry-pick <a>..<b>", "copy a range of commits onto another branch"],
+    ["git branch -f <branch> <sha>", "move a branch pointer explicitly"],
+    ["git reflog", "the net, if you reset before branching"]
+  ]
+}

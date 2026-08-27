@@ -1,0 +1,107 @@
+{
+  "id": "undo-recover-staged-blob",
+  "title": "You never committed it — but you did stage it once",
+  "category": "undo",
+  "level": "expert",
+  "order": 6,
+  "duration_min": 12,
+  "summary": "reset --hard destroyed an hour of uncommitted work. There is no reflog entry for it. But if you ran git add even once, the content is in the object database — go and get it.",
+  "concepts": ["blobs from git add", "fsck dangling blob", "cat-file", "unrecoverable vs recoverable", "stash as insurance"],
+  "mental_model": "`git add` does not just record a path — it writes the file's content into `.git/objects` as a blob, immediately. Resetting removes the index entry, but nothing deletes that blob. If it was ever staged, it exists.",
+  "danger": "This only works for content that was staged at some point. A file edited and never added is genuinely gone after reset --hard — no git command can recover it.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "write": { "path": "analysis.py", "content": "import statistics\n\n\ndef summarise(readings):\n    \"\"\"An hour of careful work that was never committed.\"\"\"\n    return {\n        'mean': statistics.mean(readings),\n        'median': statistics.median(readings),\n        'stdev': statistics.stdev(readings) if len(readings) > 1 else 0.0,\n        'range': max(readings) - min(readings),\n    }\n" } },
+    { "run": "git add analysis.py" },
+    { "write": { "path": "scratch.py", "content": "# never staged, never committed\nTEMP = 1\n" } }
+  ],
+  "steps": [
+    {
+      "title": "Look at what is about to be lost",
+      "why": "analysis.py is staged. scratch.py is not — it has never been through `git add`. That distinction is the entire difference between recoverable and gone.",
+      "commands": ["git status --short", "git ls-files -s", "cat analysis.py"],
+      "expect": "analysis.py has an index entry with a blob hash. scratch.py is just ??."
+    },
+    {
+      "title": "Destroy everything",
+      "why": "`reset --hard` matches index and working tree to HEAD; `clean -fd` removes the untracked leftovers. This is the standard 'start from scratch' pair, fired at the wrong moment.",
+      "commands": ["git reset --hard", "git clean -fd", "git status --short", "ls"],
+      "expect": "Both files gone from disk. Nothing in the reflog refers to them — they were never commits.",
+      "verify": [
+        { "cmd": "ls", "not_contains": ["analysis.py", "scratch.py"],
+          "label": "both files are gone from the working tree" }
+      ]
+    },
+    {
+      "title": "Confirm the usual routes are dead ends",
+      "why": "The reflog only records commits. There is no commit here, so there is nothing for it to show. This is the point at which most people conclude the work is gone.",
+      "commands": ["git reflog", "git log --oneline --all", "git stash list"],
+      "expect": "One commit, no stashes, nothing useful."
+    },
+    {
+      "title": "Ask for dangling blobs",
+      "why": "`fsck` reports objects nothing points at — and `git add` wrote analysis.py into the object store as a blob. It is unreferenced now, but it is still sitting there.",
+      "commands": ["git fsck --lost-found", "git fsck --cache --unreachable"],
+      "expect": "A 'dangling blob <sha>' line.",
+      "verify": [
+        { "cmd": "git fsck --lost-found", "contains": "dangling blob",
+          "label": "the staged content is still in the object database" }
+      ]
+    },
+    {
+      "title": "Read the blob",
+      "why": "`cat-file -p` prints any object by hash. Before restoring, confirm it is the file you want — a busy repository can have several dangling blobs from different abandoned operations.",
+      "commands": ["sh -c 'for sha in $(git fsck --lost-found 2>/dev/null | grep \"dangling blob\" | cut -d\" \" -f3); do echo \"== $sha\"; git cat-file -p $sha; done'"],
+      "expect": "Your analysis code, printed straight out of .git/objects."
+    },
+    {
+      "title": "Write it back to disk",
+      "why": "Redirect the blob's content into a file and it is recovered. There is no metadata — no filename, no timestamp — because a blob is only content. You supply the name.",
+      "actions": [
+        { "run": "sh -c 'git cat-file -p $(git fsck --lost-found 2>/dev/null | grep \"dangling blob\" | cut -d\" \" -f3 | head -1) > analysis.py'" }
+      ],
+      "commands": ["ls", "cat analysis.py", "git status --short"],
+      "verify": [
+        { "cmd": "cat analysis.py", "contains": "def summarise",
+          "label": "the staged file was recovered from a dangling blob",
+          "hint": "git cat-file -p <blob-sha> > analysis.py" }
+      ]
+    },
+    {
+      "title": "Commit it before anything else happens",
+      "why": "It is recovered but still uncommitted, which is exactly the state that lost it in the first place. Commit now; admire it later.",
+      "commands": ["git add analysis.py", "git commit -m \"Add reading summary analysis\"", "git log --oneline", "ls"],
+      "expect": "Two commits. scratch.py is still gone, and always will be — it was never staged.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 2, "label": "the recovered work is committed" },
+        { "cmd": "ls", "not_contains": "scratch.py",
+          "label": "the never-staged file is genuinely unrecoverable" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show HEAD:analysis.py", "contains": ["def summarise", "stdev"],
+      "label": "the staged-then-destroyed file was recovered and committed",
+      "hint": "git fsck --lost-found, then git cat-file -p <blob> > analysis.py" },
+    { "cmd": "ls", "not_contains": "scratch.py",
+      "label": "the file that was never staged is gone for good — no command recovers it" },
+    { "cmd": "git log --oneline", "lines": 2, "label": "history has the recovery commit" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree" }
+  ],
+  "pitfalls": [
+    "This only works because `git add` writes a blob immediately. Content that was only ever edited on disk is not in git at all.",
+    "A dangling blob has no filename. If several files were staged you must read each one to tell them apart.",
+    "`git gc --prune=now` deletes dangling blobs. Do not tidy up before recovering.",
+    "The real lesson is upstream: `git stash -u` before any `reset --hard` costs two seconds and makes all of this unnecessary."
+  ],
+  "cheatsheet": [
+    ["git fsck --lost-found", "dangling blobs, trees and commits"],
+    ["git cat-file -p <sha>", "print any object's content"],
+    ["git cat-file -t <sha>", "what kind of object it is"],
+    ["git cat-file -p <sha> > file", "write a recovered blob back to disk"],
+    ["git ls-files -s", "the blob hash behind each staged file"],
+    ["git stash -u", "the two-second insurance policy"]
+  ]
+}
