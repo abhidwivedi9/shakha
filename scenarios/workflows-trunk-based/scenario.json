@@ -1,0 +1,150 @@
+{
+  "id": "workflows-trunk-based",
+  "title": "Trunk-based development: merge before it is finished",
+  "category": "workflows",
+  "level": "intermediate",
+  "order": 3,
+  "duration_min": 14,
+  "summary": "Branches live hours, not weeks. Ship an unfinished feature safely behind a flag, keep main always releasable, and see why this model has almost no merge conflicts.",
+  "concepts": ["short-lived branches", "feature flags", "always-releasable main", "small commits", "conflict avoidance"],
+  "mental_model": "Merge conflicts are a function of time apart, not of team size. Trunk-based development attacks the time: everyone merges to main daily, and unfinished work hides behind a flag rather than behind a branch.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "from dosing import dose\n\n\ndef main():\n    print(dose(2.0))\n" } },
+    { "write": { "path": "dosing.py", "content": "def dose(ml):\n    return ml * 1.35\n" } },
+    { "write": { "path": "flags.py", "content": "FLAGS = {\n}\n\n\ndef enabled(name):\n    return FLAGS.get(name, False)\n" } },
+    { "write": { "path": ".gitignore", "content": "__pycache__/\n*.pyc\n" } },
+    { "commit": { "message": "Add controller with a feature flag module" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true }
+  ],
+  "steps": [
+    {
+      "title": "Day one: add the flag, off by default",
+      "why": "The first commit of any large change adds a flag that turns it off. It is safe to merge immediately because it changes nothing at runtime — and merging immediately is the entire point.",
+      "actions": [
+        { "run": "git switch -q -c feature/auto-dosing origin/main" },
+        { "write": { "path": "flags.py", "content": "FLAGS = {\n    'auto_dosing': False,\n}\n\n\ndef enabled(name):\n    return FLAGS.get(name, False)\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add auto_dosing feature flag, off by default\"" },
+        { "run": "git switch -q main" },
+        { "run": "git merge -q --ff-only feature/auto-dosing" },
+        { "run": "git push -q origin main" },
+        { "run": "git branch -q -d feature/auto-dosing" }
+      ],
+      "commands": ["git log --oneline", "cat flags.py", "git branch"],
+      "expect": "Merged and the branch already deleted — it lived about four minutes.",
+      "verify": [
+        { "cmd": "cat flags.py", "contains": "auto_dosing", "label": "the flag is on main" },
+        { "cmd": "git branch", "lines": 1, "label": "no long-lived branch was created" }
+      ]
+    },
+    {
+      "title": "Meanwhile a colleague edits the same file",
+      "why": "In a branch-per-feature model this is where the conflict is born. Here they merge within the hour, so the two changes never drift apart.",
+      "actions": [
+        { "cwd": "teammate", "run": "git pull -q --ff-only origin main" },
+        { "cwd": "teammate", "as": "teammate", "write": { "path": "flags.py", "content": "FLAGS = {\n    'auto_dosing': False,\n    'ph_alerts': True,\n}\n\n\ndef enabled(name):\n    return FLAGS.get(name, False)\n" } },
+        { "cwd": "teammate", "as": "teammate", "commit": { "message": "Add ph_alerts flag, on by default" } },
+        { "cwd": "teammate", "run": "git push -q origin main" }
+      ],
+      "commands": ["git fetch origin", "git log --oneline origin/main", "git diff HEAD origin/main -- flags.py"],
+      "expect": "Their change is a clean addition next to yours."
+    },
+    {
+      "title": "Day two: pull first, then work",
+      "why": "`pull --rebase` keeps your work on top of theirs with no merge commit. Doing it at the start of every session is what keeps trunk-based development conflict-free.",
+      "actions": [
+        { "run": "git pull -q --rebase origin main" },
+        { "run": "git switch -q -c feature/auto-dosing-schedule" },
+        { "write": { "path": "schedule.py", "content": "from flags import enabled\n\nTIMES = ['08:00', '20:00']\n\n\ndef next_dose_time(now):\n    if not enabled('auto_dosing'):\n        return None\n    return TIMES[0]\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add dosing schedule behind the auto_dosing flag\"" },
+        { "run": "git switch -q main" },
+        { "run": "git merge -q --ff-only feature/auto-dosing-schedule" },
+        { "run": "git push -q origin main" },
+        { "run": "git branch -q -d feature/auto-dosing-schedule" }
+      ],
+      "commands": ["git log --oneline", "cat schedule.py", "git status -sb"],
+      "expect": "Half-finished code on main, doing nothing, because the flag is off.",
+      "verify": [
+        { "cmd": "git log --oneline main", "lines": 4,
+          "label": "unfinished work is merged to main daily" },
+        { "cmd": "cat schedule.py", "contains": "enabled('auto_dosing')",
+          "label": "…but gated behind the flag" }
+      ]
+    },
+    {
+      "title": "Prove main is still releasable",
+      "why": "The new module is inert: with the flag off, `next_dose_time` returns None and nothing calls into it. That property is what makes merging incomplete work honest rather than reckless.",
+      "commands": ["sh -c 'python -c \"import schedule; print(schedule.next_dose_time(0))\"'", "cat flags.py"],
+      "expect": "None — the code is present and dormant."
+    },
+    {
+      "title": "Day three: finish it and flip the flag",
+      "why": "The feature becomes live in a one-line commit, entirely separate from the code that implements it. If it misbehaves in production, the revert is that one line — no code rollback, no redeploy of the previous build.",
+      "actions": [
+        { "run": "git pull -q --rebase origin main" },
+        { "write": { "path": "flags.py", "content": "FLAGS = {\n    'auto_dosing': True,\n    'ph_alerts': True,\n}\n\n\ndef enabled(name):\n    return FLAGS.get(name, False)\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Enable auto_dosing\"" },
+        { "run": "git push -q origin main" }
+      ],
+      "commands": ["sh -c 'python -c \"import importlib, schedule, flags; importlib.reload(flags); importlib.reload(schedule); print(schedule.next_dose_time(0))\"'", "git log --oneline -3"],
+      "expect": "08:00 — the feature is live.",
+      "verify": [
+        { "cmd": "cat flags.py", "contains": "'auto_dosing': True",
+          "label": "the feature was enabled by a one-line commit" }
+      ]
+    },
+    {
+      "title": "Roll back without touching code",
+      "why": "Reverting the flag commit disables the feature instantly. Compare with reverting a merged feature branch, which touches every file it added and often conflicts.",
+      "commands": ["sh -c 'git revert --no-edit $(git log -1 --format=%H --grep=\"Enable auto_dosing\")'", "cat flags.py", "git show --stat HEAD"],
+      "expect": "One file, two lines — the smallest possible production rollback.",
+      "verify": [
+        { "cmd": "git show --stat HEAD", "contains": "flags.py",
+          "label": "the rollback touched only the flag file" },
+        { "cmd": "git show --stat HEAD", "not_contains": "schedule.py",
+          "label": "…and none of the feature code" }
+      ]
+    },
+    {
+      "title": "Look at what history looks like",
+      "why": "A straight line of small commits, no merge commits, no branches older than a day. `git bisect` works perfectly on this shape, and so does reading it.",
+      "commands": ["git log --oneline --graph", "git branch -a", "git push origin main"],
+      "verify": [
+        { "cmd": "git log --oneline --merges", "empty": true,
+          "label": "no merge commits at all — every branch fast-forwarded" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline --merges main", "empty": true,
+      "label": "history is a straight line: branches lived hours and fast-forwarded",
+      "hint": "merge with --ff-only after pulling with --rebase" },
+    { "cmd": "cat schedule.py", "contains": "enabled('auto_dosing')",
+      "label": "unfinished work shipped to main behind a flag" },
+    { "cmd": "cat flags.py", "contains": "'auto_dosing': False",
+      "label": "the feature is currently off, having been rolled back by reverting one line" },
+    { "cmd": "git show --stat HEAD", "not_contains": "schedule.py",
+      "label": "the rollback did not touch any feature code" },
+    { "cmd": "git branch", "lines": 1,
+      "label": "no feature branches are left lying around" }
+  ],
+  "pitfalls": [
+    "Trunk-based only works with a test suite you trust and a flag mechanism. Without them, merging unfinished work is exactly as reckless as it sounds.",
+    "Flags accumulate. Delete each one within a release or two of shipping, or the codebase becomes a maze of dead branches in the code itself.",
+    "`git pull --rebase` at the start of every session is the discipline that avoids conflicts. Set `pull.rebase true` and stop thinking about it.",
+    "A branch that lives more than a day or two has stopped being trunk-based, whatever the team calls its process."
+  ],
+  "cheatsheet": [
+    ["git pull --rebase", "start every session on top of everyone else's work"],
+    ["git switch -c <branch>", "branch for hours, not weeks"],
+    ["git merge --ff-only <branch>", "keep history linear"],
+    ["git branch -d <branch>", "delete it the same day"],
+    ["git config pull.rebase true", "make the rebase pull automatic"],
+    ["git revert <flag-commit>", "roll back a feature without touching its code"],
+    ["git log --oneline --merges", "should be empty in this model"]
+  ]
+}

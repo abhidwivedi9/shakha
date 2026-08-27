@@ -1,0 +1,131 @@
+{
+  "id": "workflows-long-branch-sync",
+  "title": "Keeping a three-week branch alive without a conflict festival",
+  "category": "workflows",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 16,
+  "summary": "Sometimes a long branch is unavoidable. Compare the two ways to keep it current — merging main in repeatedly, or rebasing onto main — and see exactly what each does to the diff a reviewer reads.",
+  "concepts": ["merge main in vs rebase onto main", "sync cadence", "rerere", "review diff cleanliness", "conflict repetition"],
+  "mental_model": "Both strategies keep you current; they differ in what they leave behind. Merging preserves shas and litters the branch with merge commits. Rebasing rewrites shas and keeps the branch a clean series — but force-pushes every time.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "engine.py", "content": "TIMEOUT = 30\nRETRIES = 3\n\n\ndef run():\n    return 'running'\n" } },
+    { "commit": { "message": "Add engine" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/rewrite" },
+    { "write": { "path": "engine.py", "content": "TIMEOUT = 30\nRETRIES = 3\n\n\nclass Engine:\n    def run(self):\n        return 'running'\n" } },
+    { "commit": { "message": "Convert engine to a class" } },
+    { "write": { "path": "engine.py", "content": "TIMEOUT = 30\nRETRIES = 3\n\n\nclass Engine:\n    def __init__(self, timeout=TIMEOUT):\n        self.timeout = timeout\n\n    def run(self):\n        return 'running'\n" } },
+    { "commit": { "message": "Add engine configuration" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "engine.py", "content": "TIMEOUT = 60\nRETRIES = 3\n\n\ndef run():\n    return 'running'\n" } },
+    { "commit": { "message": "Raise the timeout after the incident" } },
+    { "run": "git push -q origin main" }
+  ],
+  "steps": [
+    {
+      "title": "Turn on rerere before you start",
+      "why": "A long branch hits the same conflict on every sync. rerere records your first resolution and replays it, which turns the second, third and fourth sync from painful into automatic.",
+      "commands": ["git config rerere.enabled true", "git switch feature/rewrite", "git log --oneline --graph --all --decorate"],
+      "verify": [
+        { "cmd": "git config --get rerere.enabled", "equals": "true", "label": "rerere is on" }
+      ]
+    },
+    {
+      "title": "Strategy one: merge main into the branch",
+      "why": "This keeps every sha stable, so a reviewer's place in the diff survives and nobody needs to force-push. The cost is a merge commit in the branch, and the branch's own history becomes harder to read.",
+      "actions": [
+        { "run": "git switch -q -c feature/rewrite-merged feature/rewrite" }
+      ],
+      "commands": ["git merge main", "git status --short", "cat engine.py"],
+      "expect": "A conflict on the TIMEOUT line — main raised it while you were restructuring."
+    },
+    {
+      "title": "Resolve it, keeping both intentions",
+      "why": "Take main's new timeout and your class structure. rerere records this resolution against the conflict's fingerprint, which is what makes the next step interesting.",
+      "actions": [
+        { "write": { "path": "engine.py", "content": "TIMEOUT = 60\nRETRIES = 3\n\n\nclass Engine:\n    def __init__(self, timeout=TIMEOUT):\n        self.timeout = timeout\n\n    def run(self):\n        return 'running'\n" } },
+        { "run": "git add engine.py" },
+        { "run": "git commit -q --no-edit" }
+      ],
+      "commands": ["git log --oneline --graph -5", "cat engine.py"],
+      "verify": [
+        { "cmd": "git log --oneline --merges feature/rewrite-merged", "lines": 1,
+          "label": "the branch now carries a merge commit" }
+      ]
+    },
+    {
+      "title": "Strategy two: rebase the branch onto main",
+      "why": "Same starting point, different verb. Your two commits are replayed on top of main's new commit, so the branch stays a clean linear series with no merge commit at all.",
+      "actions": [
+        { "run": "git switch -q -c feature/rewrite-rebased feature/rewrite" }
+      ],
+      "commands": ["git rebase main", "git status --short", "cat engine.py"],
+      "expect": "The same conflict — but rerere resolves it for you automatically this time.",
+      "verify": [
+        { "cmd": "cat engine.py", "contains": "TIMEOUT = 60",
+          "label": "rerere replayed the resolution during the rebase",
+          "hint": "enable rerere before the first conflict, not after" }
+      ]
+    },
+    {
+      "title": "Finish the rebase",
+      "why": "rerere resolved the file but deliberately left it unstaged, so you still get to look. Stage and continue — and note you did not have to think about the conflict a second time.",
+      "actions": [
+        { "run": "git add engine.py" },
+        { "run": "git rebase --continue", "env": { "GIT_EDITOR": "true" } }
+      ],
+      "commands": ["git log --oneline --graph", "cat engine.py", "git status --short"],
+      "verify": [
+        { "cmd": "git log --oneline main..feature/rewrite-rebased", "lines": 2,
+          "label": "the rebased branch is a clean two-commit series" },
+        { "cmd": "git log --oneline --merges feature/rewrite-rebased", "empty": true,
+          "label": "…with no merge commits" }
+      ]
+    },
+    {
+      "title": "Compare what a reviewer reads",
+      "why": "Identical code, different reading experience. The merged branch shows three commits including a merge; the rebased one shows two commits that apply cleanly to current main. For review, the second is unambiguously better.",
+      "commands": ["git diff --stat feature/rewrite-merged feature/rewrite-rebased", "git log --oneline --graph feature/rewrite-merged -4", "git log --oneline --graph feature/rewrite-rebased -3"],
+      "expect": "No file differences at all — only the history differs.",
+      "verify": [
+        { "cmd": "git diff --name-only feature/rewrite-merged feature/rewrite-rebased", "empty": true,
+          "label": "both strategies produce identical code" }
+      ]
+    },
+    {
+      "title": "Choose by whether the branch is shared",
+      "why": "Rebase while the branch is yours alone; merge once other people have pulled it. That single rule resolves nearly every argument about which is correct — they are correct in different situations.",
+      "commands": ["git switch feature/rewrite-rebased", "git log --oneline --graph --all --decorate -8", "git branch -vv"],
+      "expect": "Nothing further to run; the decision is social, not technical."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main..feature/rewrite-rebased", "lines": 2,
+      "label": "the rebased branch is a clean series on top of current main",
+      "hint": "git rebase main" },
+    { "cmd": "git log --oneline --merges feature/rewrite-rebased", "empty": true,
+      "label": "…with no merge commits in it" },
+    { "cmd": "git log --oneline --merges feature/rewrite-merged", "lines": 1,
+      "label": "the merged branch carries a merge commit instead" },
+    { "cmd": "git diff --name-only feature/rewrite-merged feature/rewrite-rebased", "empty": true,
+      "label": "both approaches produced identical code" },
+    { "cmd": "git config --get rerere.enabled", "equals": "true",
+      "label": "rerere made the second conflict resolve itself" }
+  ],
+  "pitfalls": [
+    "Rebasing a branch other people have pulled forces them into a painful reconciliation. Once shared, merge.",
+    "Syncing weekly means weekly conflicts of increasing size. Syncing daily means daily conflicts of trivial size. The cadence matters more than the strategy.",
+    "Without rerere, a long-lived rebase makes you resolve the same conflict on every sync. Turn it on globally and forget it.",
+    "If a branch needs three weeks, ask whether it can ship in pieces behind a flag instead. The best fix for long-branch pain is a shorter branch."
+  ],
+  "cheatsheet": [
+    ["git merge main", "sync by merging — stable shas, merge commits"],
+    ["git rebase main", "sync by rebasing — clean series, new shas"],
+    ["git config rerere.enabled true", "resolve each recurring conflict once"],
+    ["git push --force-with-lease", "publish a rebased branch safely"],
+    ["git diff --name-only A B", "prove two strategies produced the same code"],
+    ["git log --oneline --merges <branch>", "how much merge noise a branch carries"]
+  ]
+}

@@ -1,0 +1,126 @@
+{
+  "id": "workflows-github-flow",
+  "title": "The pull request loop, without a website",
+  "category": "workflows",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 15,
+  "summary": "Branch, push, review, address feedback, merge, delete. Run the whole GitHub flow against a real bare repository so you can see exactly which git commands the buttons on a website are pressing for you.",
+  "concepts": ["feature branch", "pull request as a diff", "review feedback", "squash vs merge", "branch cleanup"],
+  "mental_model": "A pull request is not a git concept. It is a website's name for 'the diff between this branch and its merge base, plus a comment thread'. Every button on it maps to a command you can run yourself.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef controller')\n" } },
+    { "write": { "path": "README.md", "content": "# Reef Controller\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true }
+  ],
+  "steps": [
+    {
+      "title": "Branch from an up-to-date main",
+      "why": "Fetch first, branch from `origin/main` rather than your possibly-stale local main. Skipping this is the most common cause of a pull request that shows unrelated commits.",
+      "commands": ["git fetch origin", "git switch -c feature/ph-alerts origin/main", "git status -sb", "git log --oneline"],
+      "verify": [
+        { "cmd": "git rev-parse --abbrev-ref HEAD", "equals": "feature/ph-alerts",
+          "label": "you are on a feature branch from origin/main" }
+      ]
+    },
+    {
+      "title": "Make the change in reviewable commits",
+      "why": "Two commits, each doing one thing. A reviewer can read them in order and understand the shape of the change before reading a single line of the diff.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "PH_LOW = 7.8\nPH_HIGH = 8.4\n\n\ndef check_ph(value):\n    return PH_LOW <= value <= PH_HIGH\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add pH range check\"" },
+        { "write": { "path": "app.py", "content": "from alerts import check_ph\n\nprint('reef controller')\nprint(check_ph(8.1))\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Wire the pH check into the entrypoint\"" }
+      ],
+      "commands": ["git log --oneline origin/main..HEAD", "git diff --stat origin/main...HEAD"]
+    },
+    {
+      "title": "Publish it — this is 'open a pull request'",
+      "why": "Pushing the branch is the whole mechanical act. The website adds a title, a description and a place to argue; git adds nothing further.",
+      "commands": ["git push -u origin feature/ph-alerts", "git branch -vv", "git ls-remote --heads origin"],
+      "verify": [
+        { "cmd": "git ls-remote --heads origin", "contains": "feature/ph-alerts",
+          "label": "the branch is published for review",
+          "hint": "git push -u origin feature/ph-alerts" }
+      ]
+    },
+    {
+      "title": "See exactly what a reviewer sees",
+      "why": "Three dots, not two. A pull request shows `origin/main...HEAD` — your changes since the fork point, without main's own later commits mixed in.",
+      "commands": ["git diff --stat origin/main...HEAD", "git log --oneline --graph origin/main...HEAD --left-right", "git diff origin/main...HEAD -- alerts.py"]
+    },
+    {
+      "title": "The reviewer looks at it in their own clone",
+      "why": "Anyone can check out a published branch and run it. This is what a reviewer should do before approving anything non-trivial — reading a diff in a browser is not the same as running the code.",
+      "cwd": "teammate",
+      "commands": ["git fetch origin", "git switch -c feature/ph-alerts origin/feature/ph-alerts", "git log --oneline", "cat alerts.py"],
+      "expect": "The branch, checked out and runnable, in a second working copy."
+    },
+    {
+      "title": "Address the review comment",
+      "why": "The reviewer wants the boundary values documented. Amend or add a commit — either is fine, but if the branch is pushed you must force, and `--force-with-lease` is the safe spelling.",
+      "actions": [
+        { "write": { "path": "alerts.py", "content": "# Safe range for a mixed reef tank; outside this, corals bleach.\nPH_LOW = 7.8\nPH_HIGH = 8.4\n\n\ndef check_ph(value):\n    \"\"\"True when the reading is inside the safe range, inclusive.\"\"\"\n    return PH_LOW <= value <= PH_HIGH\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Document the pH safe range\"" }
+      ],
+      "commands": ["git push origin feature/ph-alerts", "git log --oneline origin/main..HEAD"],
+      "expect": "A third commit, pushed as a fast-forward — reviewers can see what changed since their comment.",
+      "verify": [
+        { "cmd": "git log --oneline origin/main..feature/ph-alerts", "lines": 3,
+          "label": "the review response is a visible extra commit" }
+      ]
+    },
+    {
+      "title": "Merge it — the green button",
+      "why": "`--no-ff` records that a branch existed and which commits it contained. That is what the 'Create a merge commit' option does; 'Squash and merge' would be `--squash` instead.",
+      "commands": ["git switch main", "git pull --ff-only origin main", "git merge --no-ff -m \"Merge pull request: pH alerts\" feature/ph-alerts", "git push origin main", "git log --oneline --graph -5"],
+      "verify": [
+        { "cmd": "git log --oneline main", "cwd": "origin", "contains": "Add pH range check",
+          "label": "the feature is on main, on the server" }
+      ]
+    },
+    {
+      "title": "Delete the branch, both copies",
+      "why": "The last button on the page. Two deletions, because local and remote branches are separate things — and a repository nobody cleans up becomes unnavigable within a quarter.",
+      "commands": ["git push origin --delete feature/ph-alerts", "git branch -d feature/ph-alerts", "git fetch --prune", "git branch -a"],
+      "verify": [
+        { "cmd": "git branch -a", "not_contains": "feature/ph-alerts",
+          "label": "the branch is gone locally and remotely",
+          "hint": "git push origin --delete, then git branch -d" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline main", "cwd": "origin",
+      "contains": ["Add pH range check", "Document the pH safe range"],
+      "label": "the whole feature, including the review response, is on main",
+      "hint": "branch, push, respond, merge --no-ff, push" },
+    { "cmd": "git rev-list --parents -n 1 main", "cwd": "origin", "matches": "^\\S+ \\S+ \\S+$",
+      "label": "it landed as a merge commit, so the branch is visible in history" },
+    { "cmd": "git branch -a", "not_contains": "feature/ph-alerts",
+      "label": "the branch was cleaned up afterwards" },
+    { "cmd": "git status -sb", "not_contains": "ahead",
+      "label": "your main matches the server" }
+  ],
+  "pitfalls": [
+    "Branch from `origin/main` after a fetch, not from a local main you last updated on Tuesday.",
+    "Force-pushing a branch under review invalidates the reviewer's place in the diff. Prefer extra commits during review, and squash at merge time if you want a clean history.",
+    "The pull-request diff is the three-dot diff. If it shows changes you did not make, your branch needs rebasing or you are reading a two-dot diff.",
+    "Deleting the remote branch does not delete your local one. Both, every time, or `git branch -a` becomes useless."
+  ],
+  "cheatsheet": [
+    ["git switch -c <branch> origin/main", "branch from the server's current state"],
+    ["git push -u origin <branch>", "open the pull request"],
+    ["git diff origin/main...HEAD", "exactly what a reviewer sees"],
+    ["git push", "push review responses as extra commits"],
+    ["git merge --no-ff <branch>", "the merge-commit button"],
+    ["git merge --squash <branch>", "the squash-and-merge button"],
+    ["git push origin --delete <branch>", "the delete-branch button"]
+  ]
+}
