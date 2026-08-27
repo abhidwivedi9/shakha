@@ -1,0 +1,127 @@
+{
+  "id": "cherrypick-a-merge",
+  "title": "Backport an entire feature that arrived as a merge",
+  "category": "cherrypick",
+  "level": "expert",
+  "order": 4,
+  "duration_min": 12,
+  "summary": "The fix you need is not one commit — it is a merge of three. Cherry-pick the merge commit itself with -m, and compare that against picking the commits individually.",
+  "concepts": ["cherry-pick -m", "mainline parent", "flattening a merge", "picking a range", "squashed backports"],
+  "mental_model": "A merge commit has no single diff — it has one per parent. `-m 1` tells cherry-pick to use the diff against the first parent, which is 'everything the merged branch brought in', flattened into one commit.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "run": "git switch -q -c release/1.0" },
+    { "write": { "path": "VERSION", "content": "1.0.0\n" } },
+    { "commit": { "message": "Cut release 1.0" } },
+    { "run": "git switch -q main" },
+    { "run": "git switch -q -c feature/retry" },
+    { "write": { "path": "retry.py", "content": "def retry(fn):\n    return fn()\n" } },
+    { "commit": { "message": "Add retry helper" } },
+    { "write": { "path": "retry.py", "content": "def retry(fn, times=3):\n    for _ in range(times):\n        try:\n            return fn()\n        except Exception:\n            pass\n    raise RuntimeError('all retries failed')\n" } },
+    { "commit": { "message": "Retry three times with backoff" } },
+    { "write": { "path": "retry_test.py", "content": "def test_retry():\n    assert True\n" } },
+    { "commit": { "message": "Test the retry helper" } },
+    { "run": "git switch -q main" },
+    { "run": "git merge -q --no-ff -m \"Merge retry helper\" feature/retry" },
+    { "write": { "path": "unrelated.py", "content": "OTHER = True\n" } },
+    { "commit": { "message": "Unrelated work on main" } }
+  ],
+  "steps": [
+    {
+      "title": "Find the merge you need",
+      "why": "The retry helper reached main as a three-commit branch behind a merge commit. Customers on release/1.0 need the whole feature, not one of its commits.",
+      "commands": ["git log --oneline --graph --all --decorate", "sh -c 'git log --merges -1 --format=\"%h %p %s\"'"],
+      "expect": "A merge commit with two parents."
+    },
+    {
+      "title": "Watch cherry-pick refuse",
+      "why": "Same reason as revert: a merge has two diffs and git will not guess which one you mean. The error names the flag you need.",
+      "commands": ["git switch release/1.0", "sh -c 'git cherry-pick $(git log --merges -1 --format=%H main)'"],
+      "expect": "error: commit ... is a merge but no -m option was given."
+    },
+    {
+      "title": "Pick it against the first parent",
+      "why": "`-m 1` uses the diff between the merge and main-before-the-merge — that is, everything the feature branch contributed. The result is one commit on the release branch containing the whole feature.",
+      "commands": ["sh -c 'git cherry-pick -m 1 -x $(git log --merges -1 --format=%H main)'", "git log --oneline", "ls", "cat retry.py"],
+      "expect": "One new commit, all three files' worth of change flattened into it.",
+      "verify": [
+        { "cmd": "git ls-files", "contains": ["retry.py", "retry_test.py"],
+          "label": "the whole feature arrived",
+          "hint": "git cherry-pick -m 1 <merge-sha>" },
+        { "cmd": "git log --oneline release/1.0", "lines": 3,
+          "label": "…as a single commit on the release branch" }
+      ]
+    },
+    {
+      "title": "Confirm nothing unrelated came with it",
+      "why": "The commit after the merge stayed on main. Cherry-picking the merge brings the feature and only the feature — which is exactly what a patch release needs.",
+      "commands": ["git ls-files", "git log --oneline --decorate"],
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": "unrelated.py",
+          "label": "main's later work was not dragged along" }
+      ]
+    },
+    {
+      "title": "The alternative: pick the commits individually",
+      "why": "Picking the range keeps the three commits distinct, which preserves reviewability and lets `git bisect` work inside the feature. It costs three conflict resolutions instead of one.",
+      "actions": [
+        { "run": "git switch -q -c release/1.0-granular release/1.0~1" }
+      ],
+      "commands": ["git cherry-pick -x main~1^1..main~1^2", "git log --oneline", "ls"],
+      "expect": "Three commits instead of one, same resulting files.",
+      "verify": [
+        { "cmd": "git log --oneline release/1.0-granular", "lines": 5,
+          "label": "the granular backport kept each commit separate",
+          "hint": "git cherry-pick <merge>^1..<merge>^2 picks the branch's own commits" }
+      ]
+    },
+    {
+      "title": "Compare the two results",
+      "why": "Identical trees, different histories. Flattened is quicker and reads as one release note; granular is better if you may need to bisect or revert part of it later.",
+      "commands": ["git diff --stat release/1.0 release/1.0-granular", "git log --oneline release/1.0", "git log --oneline release/1.0-granular"],
+      "expect": "No file differences at all.",
+      "verify": [
+        { "cmd": "git diff --name-only release/1.0 release/1.0-granular", "empty": true,
+          "label": "both approaches produce the same code" }
+      ]
+    },
+    {
+      "title": "Ship the flattened one",
+      "why": "For a patch release, one commit describing one feature is usually the right trade. Tag it and the backport is done.",
+      "commands": ["git switch release/1.0", "git tag -a v1.0.1 -m \"Patch release 1.0.1 — backport retry helper\"", "git describe", "git log --oneline --decorate -2"],
+      "verify": [
+        { "cmd": "git describe", "equals": "v1.0.1", "label": "the patch release is tagged" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git ls-tree -r release/1.0 --name-only", "contains": ["retry.py", "retry_test.py"],
+      "label": "the whole feature was backported",
+      "hint": "git cherry-pick -m 1 <merge-sha>" },
+    { "cmd": "git ls-tree -r release/1.0 --name-only", "not_contains": "unrelated.py",
+      "label": "and nothing unrelated came with it" },
+    { "cmd": "git log --oneline release/1.0", "lines": 3,
+      "label": "it landed as one flattened commit" },
+    { "cmd": "git diff --name-only release/1.0 release/1.0-granular", "empty": true,
+      "label": "the granular backport produced identical code",
+      "hint": "git cherry-pick <merge>^1..<merge>^2" },
+    { "cmd": "git tag --contains release/1.0", "contains": "v1.0.1",
+      "label": "the patch release is tagged" }
+  ],
+  "pitfalls": [
+    "`-m 1` is the mainline parent — the branch that was merged INTO. `-m 2` gives you the inverse diff and almost never what you want.",
+    "A flattened merge loses the individual commit messages. Write a good message on the pick, because the detail is gone.",
+    "`<merge>^1..<merge>^2` is the idiom for 'the commits the branch contributed'. Read it as: everything in the second parent that is not in the first.",
+    "If the feature depends on something else on main, neither approach will apply cleanly. Backport the dependency first."
+  ],
+  "cheatsheet": [
+    ["git cherry-pick -m 1 <merge>", "flatten a merge into one commit here"],
+    ["git cherry-pick <merge>^1..<merge>^2", "pick the branch's commits individually"],
+    ["git log --merges", "find merge commits"],
+    ["git log -1 --format='%h %p'", "a commit and its parents"],
+    ["git cherry-pick -x", "record provenance either way"],
+    ["git diff --name-only A B", "prove two backports match"]
+  ]
+}

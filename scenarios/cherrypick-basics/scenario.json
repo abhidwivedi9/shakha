@@ -1,0 +1,111 @@
+{
+  "id": "cherrypick-basics",
+  "title": "Backport one commit to the release branch",
+  "category": "cherrypick",
+  "level": "beginner",
+  "order": 1,
+  "duration_min": 12,
+  "summary": "A fix landed on main but customers are on the release branch. Copy that one commit across, record where it came from, and understand why it gets a different sha.",
+  "concepts": ["git cherry-pick", "-x provenance", "new sha, same patch", "patch id", "backporting"],
+  "mental_model": "Cherry-pick takes a commit's diff and applies it somewhere else, then makes a new commit. Same change, different parent, therefore a different sha. It copies; it never moves.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "auth.py", "content": "def check(token):\n    return token == 'secret'\n" } },
+    { "commit": { "message": "Add auth" } },
+    { "run": "git switch -q -c release/3.2" },
+    { "write": { "path": "VERSION", "content": "3.2.0\n" } },
+    { "commit": { "message": "Cut release 3.2" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "auth.py", "content": "import hmac\n\n\ndef check(token, expected):\n    return hmac.compare_digest(token, expected)\n" } },
+    { "commit": { "message": "Fix timing attack in token comparison" } },
+    { "write": { "path": "feature.py", "content": "EXPERIMENTAL = True\n" } },
+    { "commit": { "message": "Add experimental feature" } },
+    { "write": { "path": "README.md", "content": "# Service\n" } },
+    { "commit": { "message": "Update readme" } }
+  ],
+  "steps": [
+    {
+      "title": "Find the fix and confirm the release lacks it",
+      "why": "main has three commits the release branch does not, but only one of them is the security fix. The others must not go along for the ride — that is the whole reason for cherry-picking rather than merging.",
+      "commands": ["git log --oneline --graph --all --decorate", "git log --oneline release/3.2..main", "git log -1 --format='%h %s' --grep='timing attack'"],
+      "expect": "Three commits ahead, one of them the fix."
+    },
+    {
+      "title": "Copy just that commit",
+      "why": "`-x` appends a '(cherry picked from commit ...)' line to the message. On a release branch this is close to mandatory: six months later it is the only record of where the change came from.",
+      "commands": ["git switch release/3.2", "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"timing attack\" main)'", "git log --oneline", "cat auth.py"],
+      "expect": "The fix applied, with a provenance line in the message.",
+      "verify": [
+        { "cmd": "git log --oneline release/3.2", "contains": "timing attack",
+          "label": "the fix is on the release branch",
+          "hint": "git cherry-pick -x <sha>" },
+        { "cmd": "git log -1 --format=%B release/3.2", "contains": "cherry picked from commit",
+          "label": "…with its origin recorded",
+          "hint": "use -x so the provenance is in the message" }
+      ]
+    },
+    {
+      "title": "Confirm nothing else came with it",
+      "why": "The experimental feature and the readme stayed on main. The release branch received exactly one change — a shipping surface you can describe in one sentence.",
+      "commands": ["ls", "git diff --stat release/3.2~1 release/3.2", "git log --oneline"],
+      "verify": [
+        { "cmd": "git ls-files", "not_contains": ["feature.py", "README.md"],
+          "label": "the unrelated commits were not copied" }
+      ]
+    },
+    {
+      "title": "See that the sha differs",
+      "why": "Same diff, different parent and different commit date, so a different object. This is why `git branch --contains` will not list the release branch for the original commit — identity and content are separate questions.",
+      "commands": ["sh -c 'echo original: $(git log -1 --format=%h --grep=\"timing attack\" main)'", "sh -c 'echo copy:     $(git log -1 --format=%h --grep=\"timing attack\" release/3.2)'", "sh -c 'git branch --contains $(git log -1 --format=%H --grep=\"timing attack\" main)'"],
+      "expect": "Two different shas; --contains lists only main."
+    },
+    {
+      "title": "Prove the patches are equivalent",
+      "why": "`patch-id` hashes a diff, ignoring line numbers and commit metadata. Two commits with the same patch id are the same change — this is exactly how `git cherry` and rebase detect already-applied work.",
+      "commands": ["sh -c 'git show $(git log -1 --format=%H --grep=\"timing attack\" main) | git patch-id'", "sh -c 'git show HEAD | git patch-id'"],
+      "expect": "The first hash matches on both lines; the commit shas after it differ."
+    },
+    {
+      "title": "Tag the patch release",
+      "why": "A cherry-picked fix is only useful once it ships. The tag makes it namable, and `git describe` on the release branch now reports a clean version.",
+      "commands": ["git tag -a v3.2.1 -m \"Patch release 3.2.1 — security fix\"", "git describe", "git log --oneline --decorate -2"],
+      "verify": [
+        { "cmd": "git describe", "equals": "v3.2.1", "label": "the patch release is tagged" }
+      ]
+    },
+    {
+      "title": "Audit the backport",
+      "why": "`git cherry` compares by patch id, so it correctly reports the fix as already present on the release branch despite the different sha. This is the command for 'what still needs backporting'.",
+      "commands": ["git cherry -v main release/3.2", "git switch main"],
+      "expect": "The fix shown as '-' (present on both); the release-cut commit as '+'."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline release/3.2", "contains": "timing attack",
+      "label": "the security fix was backported",
+      "hint": "git cherry-pick -x <sha> onto release/3.2" },
+    { "cmd": "git log --format=%B release/3.2", "contains": "cherry picked from commit",
+      "label": "the backport records where it came from" },
+    { "cmd": "git show release/3.2:auth.py", "contains": "compare_digest",
+      "label": "the fixed code is on the release branch" },
+    { "cmd": "git ls-tree -r release/3.2 --name-only", "not_contains": ["feature.py", "README.md"],
+      "label": "no unrelated work was dragged along",
+      "hint": "that is the difference between cherry-pick and merge" },
+    { "cmd": "git tag --contains release/3.2", "contains": "v3.2.1",
+      "label": "the patch release is tagged" }
+  ],
+  "pitfalls": [
+    "Always use `-x` when backporting. Without it there is no link back to the original commit and no way to audit what shipped where.",
+    "Cherry-picking a commit that depends on an earlier one produces a conflict or, worse, code that applies cleanly and is subtly wrong.",
+    "`git branch --contains` will not show the backport, because the sha differs. Use `git cherry` or `git log --grep` instead.",
+    "Repeatedly cherry-picking between long-lived branches is a sign the branches should be merged instead."
+  ],
+  "cheatsheet": [
+    ["git cherry-pick <sha>", "copy a commit onto the current branch"],
+    ["git cherry-pick -x <sha>", "…recording where it came from"],
+    ["git cherry -v <upstream> <head>", "which commits are missing by content"],
+    ["git show <sha> | git patch-id", "the content hash of a change"],
+    ["git log --grep='cherry picked from'", "find backports"],
+    ["git cherry-pick --abort", "back out cleanly"]
+  ]
+}

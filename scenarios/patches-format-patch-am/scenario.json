@@ -1,0 +1,110 @@
+{
+  "id": "patches-format-patch-am",
+  "title": "Send a change by email: format-patch and am",
+  "category": "cherrypick",
+  "level": "advanced",
+  "order": 3,
+  "duration_min": 14,
+  "summary": "How the Linux kernel and every mailing-list project work. Export commits as patch files, apply them on another machine, and keep the original author's name on the commit.",
+  "concepts": ["format-patch", "git am", "authorship preservation", "apply vs am", "--3way", "cover letter"],
+  "mental_model": "`format-patch` writes each commit as an mbox-format file containing the author, date, message and diff. `git am` reads those files back and recreates the commits — including their original authorship, which plain `git apply` cannot do.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "driver.py", "content": "def read_sensor():\n    return 0.0\n" } },
+    { "commit": { "message": "Add sensor driver" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "driver.py", "content": "def read_sensor():\n    raw = _read_raw()\n    return raw / 100.0\n\n\ndef _read_raw():\n    return 2640\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Read the sensor properly instead of returning zero" } },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "driver.py", "content": "def read_sensor():\n    raw = _read_raw()\n    if raw < 0:\n        raise ValueError('sensor returned a negative reading')\n    return raw / 100.0\n\n\ndef _read_raw():\n    return 2640\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Reject negative sensor readings" } }
+  ],
+  "steps": [
+    {
+      "title": "Export the contributor's commits as patches",
+      "why": "Run from the contributor's clone: `format-patch` writes one numbered file per commit. Each is a complete, self-describing unit — author, date, message, diff — that can travel by any means at all.",
+      "cwd": "teammate",
+      "commands": ["git format-patch origin/main --output-directory ../patches", "ls ../patches"],
+      "expect": "0001-...patch and 0002-...patch."
+    },
+    {
+      "title": "Read one",
+      "why": "It is an email. From, Date, Subject, the message body, then a unified diff and a git version trailer. Nothing proprietary — that is why this workflow predates and outlives every forge.",
+      "cwd": "teammate",
+      "commands": ["sh -c 'head -20 ../patches/0001-*.patch'"],
+      "expect": "A From: line naming Priya, and the commit message as the Subject."
+    },
+    {
+      "title": "Apply them in the maintainer's clone",
+      "why": "`git am` recreates both commits. Note it takes the files in order and creates one commit per patch — this is a replay, not a squash.",
+      "commands": ["sh -c 'git am ../patches/*.patch'", "git log --oneline", "cat driver.py"],
+      "expect": "Two new commits, and the driver code updated.",
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 3,
+          "label": "both patches applied as separate commits",
+          "hint": "git am ../patches/*.patch" }
+      ]
+    },
+    {
+      "title": "Check who the commits belong to",
+      "why": "The author is Priya; the committer is you. Git tracks these separately, and `am` preserves the distinction — which is the entire point of using it rather than copying the diff by hand.",
+      "commands": ["git log --format='%h author=%an committer=%cn %s' -3"],
+      "expect": "author=Priya, committer=Learner on the applied commits.",
+      "verify": [
+        { "cmd": "git log -1 --format=%an", "equals": "Priya",
+          "label": "the original author is preserved",
+          "hint": "git am keeps authorship; git apply would not" },
+        { "cmd": "git log -1 --format=%cn", "equals": "Learner",
+          "label": "…while you are recorded as the committer" }
+      ]
+    },
+    {
+      "title": "Compare with plain apply",
+      "why": "`git apply` only touches the working tree — no commit, no author, no message. It is for applying a diff, not for accepting a contribution.",
+      "commands": ["git reset --hard HEAD~2", "sh -c 'git apply --stat ../patches/0001-*.patch'", "sh -c 'git apply ../patches/0001-*.patch'", "git status --short", "git log --oneline"],
+      "expect": "The file changes, but no commit exists and no author was recorded."
+    },
+    {
+      "title": "Back to am, and handle a failure",
+      "why": "If a patch does not apply, `am` stops with the mbox half-consumed. `--3way` lets git use blob information to merge instead of applying blindly; `--abort` unwinds the whole series.",
+      "commands": ["git restore --staged --worktree .", "sh -c 'git am --3way ../patches/*.patch'", "git log --oneline", "git status --short"],
+      "verify": [
+        { "cmd": "git log --oneline", "lines": 3, "label": "the series applied again cleanly" }
+      ]
+    },
+    {
+      "title": "Add a cover letter for a series",
+      "why": "`--cover-letter` generates a 0000 file describing the whole series with a diffstat. On a mailing list it is the pull-request description — the place you explain why, not what.",
+      "cwd": "teammate",
+      "commands": ["git format-patch origin/main --cover-letter --output-directory ../patches2", "ls ../patches2", "sh -c 'head -15 ../patches2/0000-cover-letter.patch'"],
+      "expect": "A cover letter plus the two patches."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline", "lines": 3,
+      "label": "the contributor's two commits were applied",
+      "hint": "git format-patch in their clone, git am in yours" },
+    { "cmd": "git log -1 --format=%an", "equals": "Priya",
+      "label": "authorship was preserved through the patch exchange" },
+    { "cmd": "git log -1 --format=%cn", "equals": "Learner",
+      "label": "and you are the committer" },
+    { "cmd": "cat driver.py", "contains": ["_read_raw", "negative reading"],
+      "label": "both changes are present in the code" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree, no am in progress" }
+  ],
+  "pitfalls": [
+    "`git apply` does not commit and does not record an author. Use `git am` for anything you are accepting from someone else.",
+    "A failed `am` leaves the series half-applied. `git am --abort` unwinds it; `git am --skip` drops the current patch.",
+    "`format-patch <ref>` exports everything since that ref, not just the last commit. Check the file count before sending.",
+    "Patches carry no merge information, so a series that depended on a merge cannot be exported faithfully."
+  ],
+  "cheatsheet": [
+    ["git format-patch <ref>", "one .patch file per commit since ref"],
+    ["git format-patch -1 <sha>", "just one commit"],
+    ["git format-patch --cover-letter", "add a series description"],
+    ["git am <files>", "apply patches as commits, keeping authorship"],
+    ["git am --3way", "merge rather than apply blindly"],
+    ["git am --abort / --skip", "unwind the series / drop one patch"],
+    ["git apply --stat <patch>", "preview a patch without applying it"]
+  ]
+}

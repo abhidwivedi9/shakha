@@ -1,0 +1,127 @@
+{
+  "id": "cherrypick-conflicts",
+  "title": "The backport does not apply cleanly",
+  "category": "cherrypick",
+  "level": "intermediate",
+  "order": 2,
+  "duration_min": 14,
+  "summary": "The release branch has drifted, so the fix will not apply as written. Resolve the conflict, continue, and learn the flags for picking several commits and for stopping before the commit.",
+  "concepts": ["cherry-pick --continue", "--abort", "--skip", "-n / --no-commit", "sequencer state"],
+  "mental_model": "Cherry-pick is a sequencer, like rebase: it applies commits one at a time and pauses on failure with a conflicted index. `--continue` resumes, `--abort` unwinds everything, `--skip` drops the current one.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    return process(data)\n\n\ndef process(data):\n    return data\n" } },
+    { "commit": { "message": "Add request handler" } },
+    { "run": "git switch -q -c release/2.0" },
+    { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    log('handling request')\n    return process(data)\n\n\ndef process(data):\n    return data\n\n\ndef log(msg):\n    print(msg)\n" } },
+    { "commit": { "message": "Add logging on the release branch" } },
+    { "run": "git switch -q main" },
+    { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    if data is None:\n        raise ValueError('empty request body')\n    return process(data)\n\n\ndef process(data):\n    return data\n" } },
+    { "commit": { "message": "Validate request body before processing" } },
+    { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    if data is None:\n        raise ValueError('empty request body')\n    return process(data)\n\n\ndef process(data):\n    return data.strip()\n" } },
+    { "commit": { "message": "Strip whitespace when processing" } }
+  ],
+  "steps": [
+    {
+      "title": "See why it will not apply cleanly",
+      "why": "Both branches edited the same function for different reasons. The fix's diff expects the release branch's version of those lines, and it is not there.",
+      "commands": ["git log --oneline --graph --all --decorate", "git diff main release/2.0 -- handler.py"]
+    },
+    {
+      "title": "Attempt the backport",
+      "why": "Cherry-pick stops with a conflicted index, exactly like a merge. Read the message: it names the commit it was applying, which matters when you are picking several.",
+      "commands": ["git switch release/2.0", "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"Validate request body\" main)'", "git status --short", "cat handler.py"],
+      "expect": "CONFLICT in handler.py, exit code 1.",
+      "verify": [
+        { "cmd": "git status --porcelain", "contains": "handler.py",
+          "label": "the cherry-pick paused on a conflict" }
+      ]
+    },
+    {
+      "title": "Look at the sequencer state",
+      "why": "`.git/sequencer` holds the in-progress operation, and `CHERRY_PICK_HEAD` names the commit being applied. This is how git knows what `--continue` should finish.",
+      "commands": ["git rev-parse --short CHERRY_PICK_HEAD", "git log -1 --format=%s CHERRY_PICK_HEAD", "git status"],
+      "expect": "The commit you are backporting, by name."
+    },
+    {
+      "title": "Prove abort is available",
+      "why": "`--abort` restores the branch and working tree completely. Every sequencer operation in git has this exit, and knowing it is there makes the conflict much less stressful.",
+      "commands": ["git cherry-pick --abort", "git status --short", "cat handler.py"],
+      "expect": "Back to the release branch's own version, tree clean.",
+      "verify": [
+        { "cmd": "git status --porcelain", "empty": true, "label": "the abort left a clean tree" }
+      ]
+    },
+    {
+      "title": "Retry and resolve properly",
+      "why": "Keep the release branch's logging AND add the validation. A backport is a code change, not a mechanical patch application — the result should be right for this branch, not identical to main.",
+      "actions": [
+        { "run": "sh -c 'git cherry-pick -x $(git log -1 --format=%H --grep=\"Validate request body\" main)'" },
+        { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    log('handling request')\n    if data is None:\n        raise ValueError('empty request body')\n    return process(data)\n\n\ndef process(data):\n    return data\n\n\ndef log(msg):\n    print(msg)\n" } },
+        { "run": "git add handler.py" }
+      ],
+      "commands": ["git status --short", "git diff --staged"],
+      "expect": "Nothing conflicted, the resolution staged, the pick still in progress."
+    },
+    {
+      "title": "Continue — never commit",
+      "why": "`--continue` finishes the pick using the original message plus the `-x` provenance line. Running `git commit` here would work but would lose that message and leave the sequencer running.",
+      "actions": [
+        { "run": "git cherry-pick --continue", "env": { "GIT_EDITOR": "true" } }
+      ],
+      "commands": ["git log --oneline -2", "git log -1 --format=%B", "cat handler.py", "git status --short"],
+      "verify": [
+        { "cmd": "git log -1 --format=%B", "contains": "cherry picked from commit",
+          "label": "the provenance survived the conflict resolution" },
+        { "cmd": "cat handler.py", "contains": ["log('handling request')", "empty request body"],
+          "label": "both the branch's logging and the backported validation are present" }
+      ]
+    },
+    {
+      "title": "Pick without committing — and note what changes",
+      "why": "`-n` applies the change and stages it without making a commit, so a series can land as one squashed backport. It conflicts here too, and this time there is no `--continue` to run: with `-n` there is no sequencer, so you resolve, stage and commit yourself.",
+      "actions": [
+        { "run": "sh -c 'git cherry-pick -n $(git log -1 --format=%H --grep=\"Strip whitespace\" main)'" },
+        { "write": { "path": "handler.py", "content": "def handle(request):\n    data = request.body\n    log('handling request')\n    if data is None:\n        raise ValueError('empty request body')\n    return process(data)\n\n\ndef process(data):\n    return data.strip()\n\n\ndef log(msg):\n    print(msg)\n" } },
+        { "run": "git add handler.py" },
+        { "run": "git commit -q -m \"Backport whitespace handling\"" }
+      ],
+      "commands": ["git log --oneline -3", "cat handler.py", "git status --short"],
+      "expect": "Four commits on the release branch, and no sequencer state to clean up.",
+      "verify": [
+        { "cmd": "git log --oneline release/2.0", "lines": 4,
+          "label": "the second backport landed as your own commit",
+          "hint": "git cherry-pick -n <sha>, resolve, then commit yourself" },
+        { "cmd": "git status --porcelain", "empty": true,
+          "label": "nothing left in progress" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git show release/2.0:handler.py", "contains": ["log('handling request')", "empty request body", "data.strip()"],
+      "label": "both backports applied, and the branch's own logging survived",
+      "hint": "resolve the conflict keeping both sides, then --continue" },
+    { "cmd": "git log --format=%B release/2.0", "contains": "cherry picked from commit",
+      "label": "provenance is recorded for the first backport" },
+    { "cmd": "git log --oneline release/2.0", "lines": 4,
+      "label": "the release branch has its own commit for each backport" },
+    { "cmd": "git status --porcelain", "empty": true,
+      "label": "no cherry-pick left in progress" }
+  ],
+  "pitfalls": [
+    "Use `git cherry-pick --continue`, not `git commit`. Committing by hand leaves the sequencer half-finished and drops the -x line.",
+    "`--skip` abandons the commit being applied. On a multi-commit pick it is easy to skip something you needed.",
+    "A conflict-free cherry-pick is not proof of correctness. A fix that assumes code the release branch does not have can apply cleanly and still be wrong.",
+    "`git cherry-pick A..B` picks a range; note it excludes A itself, exactly like log ranges.",
+    "With `-n` there is no sequencer state, so `--continue` does not apply. Resolve, `git add`, and commit yourself."
+  ],
+  "cheatsheet": [
+    ["git cherry-pick -x <sha>", "backport with provenance"],
+    ["git cherry-pick --continue", "finish after resolving"],
+    ["git cherry-pick --abort", "unwind completely"],
+    ["git cherry-pick --skip", "drop the commit being applied"],
+    ["git cherry-pick -n <sha>", "apply without committing"],
+    ["git cherry-pick A..B", "a range of commits"],
+    ["git rev-parse CHERRY_PICK_HEAD", "which commit is mid-flight"]
+  ]
+}
