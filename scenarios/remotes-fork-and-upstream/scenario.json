@@ -1,0 +1,137 @@
+{
+  "id": "remotes-fork-and-upstream",
+  "title": "Contributing to a fork: two remotes, one branch",
+  "category": "remotes",
+  "level": "intermediate",
+  "order": 5,
+  "duration_min": 14,
+  "summary": "The open-source workflow: your fork is `origin`, the project is `upstream`. Keep your fork current, base work on the project's latest, and never push to the wrong one.",
+  "concepts": ["multiple remotes", "upstream remote", "fetch upstream", "rebase onto upstream/main", "push to fork"],
+  "mental_model": "A remote is a named URL plus a set of tracking refs. Nothing stops you having several. The fork workflow is just the discipline of always fetching from `upstream` and always pushing to `origin`.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "README.md", "content": "# Upstream Project\n" } },
+    { "write": { "path": "core.py", "content": "VERSION = '1.0'\n" } },
+    { "commit": { "message": "Upstream: initial release" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "core.py", "content": "VERSION = '1.1'\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Upstream: release 1.1" } },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "docs.md", "content": "# Docs\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Upstream: add docs" } },
+    { "cwd": "teammate", "run": "git push -q origin main" },
+    { "run": "git remote rename origin upstream" },
+    { "run": "git init --bare -q -b main ../fork.git", "cwd": "repo" },
+    { "run": "git remote add origin ../fork.git" },
+    { "run": "git push -q -u origin main" }
+  ],
+  "steps": [
+    {
+      "title": "Look at your two remotes",
+      "why": "`upstream` is the project you are contributing to; `origin` is your own fork, the only one you can push to. Naming them this way is a near-universal convention — follow it and every guide you read will make sense.",
+      "commands": ["git remote -v", "git branch -vv"],
+      "expect": "Two remotes. Your main tracks origin, not upstream."
+    },
+    {
+      "title": "See how far behind the project you are",
+      "why": "The project moved twice since you forked. Fetching upstream updates `upstream/main` and nothing else — your branches and your fork are untouched.",
+      "commands": ["git fetch upstream", "git log --oneline --graph --all --decorate", "git log --oneline main..upstream/main"],
+      "expect": "Two commits you do not have.",
+      "verify": [
+        { "cmd": "git log --oneline main..upstream/main", "lines": 2,
+          "label": "you can see exactly what upstream has added" }
+      ]
+    },
+    {
+      "title": "Bring your fork's main up to date",
+      "why": "Fast-forward your local main to upstream's, then push it to your fork. Your fork's main should always be a mirror of the project — never a place you commit to directly.",
+      "commands": ["git merge --ff-only upstream/main", "git push origin main", "git log --oneline --graph --all --decorate"],
+      "expect": "A fast-forward, then your fork matches the project.",
+      "verify": [
+        { "cmd": "git log --oneline main", "lines": 3, "label": "your main matches upstream" }
+      ]
+    },
+    {
+      "title": "Branch your contribution from the project's latest",
+      "why": "Branching from up-to-date main means your pull request will apply cleanly. Branching from a stale fork is the single most common reason a first contribution needs a rebase before review.",
+      "actions": [
+        { "run": "git switch -q -c fix/version-parsing upstream/main" },
+        { "write": { "path": "core.py", "content": "VERSION = '1.1'\n\n\ndef parse_version(text):\n    return tuple(int(p) for p in text.split('.'))\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add a version parsing helper\"" }
+      ],
+      "commands": ["git log --oneline --graph --all --decorate", "git log --oneline upstream/main..HEAD"],
+      "verify": [
+        { "cmd": "git log --oneline upstream/main..HEAD", "lines": 1,
+          "label": "your branch is exactly one commit ahead of upstream",
+          "hint": "branch from upstream/main, not from a stale local main" }
+      ]
+    },
+    {
+      "title": "Push it to your fork, not the project",
+      "why": "You have no write access to upstream — the pull request is opened from your fork's branch. `push -u origin` records that pairing so future pushes go to the right place automatically.",
+      "commands": ["git push -u origin fix/version-parsing", "git branch -vv", "git remote -v"],
+      "verify": [
+        { "cmd": "git config --get branch.fix/version-parsing.remote", "equals": "origin",
+          "label": "the contribution branch tracks your fork, not upstream",
+          "hint": "git push -u origin fix/version-parsing" }
+      ]
+    },
+    {
+      "title": "Upstream moves again while you wait for review",
+      "why": "This is normal on any active project. Fetch and rebase your one commit onto their new tip; the pull request updates itself and stays a clean one-commit diff.",
+      "actions": [
+        { "cwd": "teammate", "as": "teammate", "write": { "path": "core.py", "content": "VERSION = '1.2'\n" } },
+        { "cwd": "teammate", "as": "teammate", "commit": { "message": "Upstream: release 1.2" } },
+        { "cwd": "teammate", "run": "git push -q origin main" },
+        { "run": "git fetch upstream" }
+      ],
+      "commands": ["git log --oneline --graph --all --decorate", "git rebase upstream/main"],
+      "expect": "A conflict on core.py, because upstream changed the same line you built on."
+    },
+    {
+      "title": "Resolve and republish",
+      "why": "Keep upstream's version number and your helper. Then force-push to your own fork — safe here because the branch is yours alone, which is exactly when forcing is acceptable.",
+      "actions": [
+        { "write": { "path": "core.py", "content": "VERSION = '1.2'\n\n\ndef parse_version(text):\n    return tuple(int(p) for p in text.split('.'))\n" } },
+        { "run": "git add core.py" },
+        { "run": "git rebase --continue", "env": { "GIT_EDITOR": "true" } },
+        { "run": "git push --force-with-lease origin fix/version-parsing" }
+      ],
+      "commands": ["git log --oneline --graph --all --decorate", "cat core.py", "git status -sb"],
+      "verify": [
+        { "cmd": "git log --oneline upstream/main..HEAD", "lines": 1,
+          "label": "still a single clean commit on top of the latest upstream" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git remote", "contains": ["origin", "upstream"],
+      "label": "both remotes are configured",
+      "hint": "git remote add upstream <project-url>" },
+    { "cmd": "git log --oneline upstream/main..HEAD", "lines": 1,
+      "label": "your contribution is one commit on top of the current upstream",
+      "hint": "fetch upstream, then git rebase upstream/main" },
+    { "cmd": "cat core.py", "contains": ["VERSION = '1.2'", "def parse_version"],
+      "label": "the rebase kept upstream's change and yours",
+      "hint": "resolve in favour of upstream's version number, keep your helper" },
+    { "cmd": "git config --get branch.fix/version-parsing.remote", "equals": "origin",
+      "label": "the branch pushes to your fork, never to upstream" },
+    { "cmd": "git status --porcelain", "empty": true, "label": "clean tree, rebase finished" }
+  ],
+  "pitfalls": [
+    "Committing directly on your fork's main makes every future sync a merge instead of a fast-forward. Keep main a pure mirror.",
+    "`git pull` on a fork pulls from origin — your fork — which is almost never what you want. Fetch upstream explicitly.",
+    "Force-pushing your own pull-request branch is fine and normal. Force-pushing anything on upstream is not, and you usually cannot anyway.",
+    "GitHub's 'Sync fork' button does the fast-forward for you, but only for the default branch."
+  ],
+  "cheatsheet": [
+    ["git remote add upstream <url>", "add the project you forked"],
+    ["git remote -v", "check which URL is which"],
+    ["git fetch upstream", "update your view of the project"],
+    ["git merge --ff-only upstream/main", "sync your main, refusing to create a merge"],
+    ["git switch -c <branch> upstream/main", "branch from the project's latest"],
+    ["git push -u origin <branch>", "publish to your fork"],
+    ["git rebase upstream/main", "keep the pull request current"]
+  ]
+}

@@ -1,0 +1,117 @@
+{
+  "id": "remotes-prune-stale",
+  "title": "Ghost branches: 40 remote branches that no longer exist",
+  "category": "remotes",
+  "level": "beginner",
+  "order": 3,
+  "duration_min": 10,
+  "summary": "Merged branches get deleted on the server, but your clone keeps showing them forever. Clean up the remote-tracking refs and the local branches whose upstream is gone.",
+  "concepts": ["fetch --prune", "gone upstream", "remote prune", "fetch.prune config", "branch -vv"],
+  "mental_model": "`origin/feature-x` is a local file recording what the server had. Deleting the branch on the server does not delete your file — only a prune does. Everything stale in `git branch -r` is a leftover snapshot.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/merged-already" },
+    { "write": { "path": "done.py", "content": "DONE = True\n" } },
+    { "commit": { "message": "Finished feature" } },
+    { "run": "git push -q -u origin feature/merged-already" },
+    { "run": "git switch -q -c feature/abandoned main" },
+    { "write": { "path": "abandoned.py", "content": "IDEA = 'never finished'\n" } },
+    { "commit": { "message": "Abandoned experiment" } },
+    { "run": "git push -q -u origin feature/abandoned" },
+    { "run": "git switch -q main" },
+    { "run": "git merge -q --no-ff -m \"Merge finished feature\" feature/merged-already" },
+    { "run": "git push -q origin main" },
+    { "cwd": "origin", "run": "git branch -D feature/merged-already" },
+    { "cwd": "origin", "run": "git branch -D feature/abandoned" }
+  ],
+  "steps": [
+    {
+      "title": "See branches that no longer exist on the server",
+      "why": "Both feature branches were deleted on the server during the setup, yet your clone lists them confidently. `git branch -r` is a cache, and nothing has invalidated it.",
+      "commands": ["git branch -r", "git branch -vv"],
+      "expect": "origin/feature/merged-already and origin/feature/abandoned still listed."
+    },
+    {
+      "title": "A plain fetch does not help",
+      "why": "`fetch` adds and updates refs. It does not delete them, because deletion is destructive and git wants to be asked. This is why clones accumulate ghosts for years.",
+      "commands": ["git fetch origin", "git branch -r"],
+      "expect": "Exactly the same list. Nothing was cleaned up."
+    },
+    {
+      "title": "Prune, and watch them disappear",
+      "why": "`--prune` deletes remote-tracking refs whose branch is gone on the server. This touches only your cache — no branch, local or remote, is affected.",
+      "commands": ["git fetch --prune origin", "git branch -r"],
+      "expect": "Only origin/main remains.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": ["feature/merged-already", "feature/abandoned"],
+          "label": "the stale remote-tracking refs are gone",
+          "hint": "git fetch --prune origin" },
+        { "cmd": "git branch -r", "contains": "origin/main",
+          "label": "…and the live one is untouched" }
+      ]
+    },
+    {
+      "title": "Find local branches whose upstream vanished",
+      "why": "Pruning does not delete your local branches — they still exist, now marked `gone`. That marker is the reliable signal that a branch was merged and cleaned up on the server.",
+      "commands": ["git branch -vv"],
+      "expect": "Both feature branches marked [origin/...: gone]."
+    },
+    {
+      "title": "Delete the merged one safely",
+      "why": "`branch -d` accepts it because the work is in main. The abandoned one will be refused, which is exactly the distinction you want a tool to make for you.",
+      "commands": ["git branch -d feature/merged-already", "git branch -d feature/abandoned"],
+      "expect": "First succeeds, second refuses — its commit is in no other branch.",
+      "verify": [
+        { "cmd": "git branch --list feature/merged-already", "empty": true,
+          "label": "the merged local branch is deleted" },
+        { "cmd": "git branch --list feature/abandoned", "not_empty": true,
+          "label": "the unmerged one was protected by -d" }
+      ]
+    },
+    {
+      "title": "Script the cleanup",
+      "why": "This one-liner deletes every local branch whose upstream is gone and which is fully merged. It is the standard end-of-sprint tidy-up, and it is safe precisely because it uses `-d` rather than `-D`.",
+      "commands": ["sh -c \"git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -d\"", "git branch -vv"],
+      "expect": "Nothing further deleted — the abandoned branch is still unmerged, and -d protects it."
+    },
+    {
+      "title": "Make pruning automatic",
+      "why": "`fetch.prune true` means every fetch and pull cleans up. There is essentially no downside: a pruned ref reappears the moment the branch does.",
+      "commands": ["git config --global fetch.prune true", "git config --global --get fetch.prune", "git fetch origin", "git branch -r"],
+      "verify": [
+        { "cmd": "git config --global --get fetch.prune", "equals": "true",
+          "label": "pruning happens on every fetch now",
+          "hint": "git config --global fetch.prune true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git branch -r", "not_contains": ["feature/merged-already", "feature/abandoned"],
+      "label": "no ghost remote-tracking branches remain",
+      "hint": "git fetch --prune origin" },
+    { "cmd": "git branch --list feature/merged-already", "empty": true,
+      "label": "the merged local branch was cleaned up",
+      "hint": "git branch -d feature/merged-already" },
+    { "cmd": "git branch --list feature/abandoned", "not_empty": true,
+      "label": "the unmerged branch survived — -d refuses to lose work" },
+    { "cmd": "git config --global --get fetch.prune", "equals": "true",
+      "label": "fetch.prune is configured" }
+  ],
+  "pitfalls": [
+    "Pruning never deletes commits or local branches. It only removes your cached view of remote branches.",
+    "`git remote prune origin --dry-run` shows what would go, if you want to look before pruning.",
+    "A branch marked `gone` may have been renamed rather than merged. Check `git log` before deleting anything with `-D`.",
+    "In a repository with hundreds of contributors, `git branch -a` without pruning is unusable. Turn `fetch.prune` on once and forget it."
+  ],
+  "cheatsheet": [
+    ["git fetch --prune", "drop remote-tracking refs for deleted branches"],
+    ["git remote prune origin --dry-run", "preview the prune"],
+    ["git branch -vv", "spot upstreams marked ': gone]'"],
+    ["git branch -d <name>", "delete local, refusing unmerged"],
+    ["git config --global fetch.prune true", "prune on every fetch"],
+    ["git push origin --delete <branch>", "delete the branch on the server"]
+  ]
+}

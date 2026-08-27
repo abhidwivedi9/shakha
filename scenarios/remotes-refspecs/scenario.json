@@ -1,0 +1,117 @@
+{
+  "id": "remotes-refspecs",
+  "title": "What fetch and push actually do: refspecs",
+  "category": "remotes",
+  "level": "expert",
+  "order": 7,
+  "duration_min": 14,
+  "summary": "Every fetch and push is a refspec — a source, a destination and a plus sign. Read the one in your config, then write your own to fetch a single branch or push to a differently-named one.",
+  "concepts": ["refspec syntax", "remote.origin.fetch", "+ for non-fast-forward", "push src:dst", "single-branch clones"],
+  "mental_model": "A refspec is `<src>:<dst>`, optionally prefixed with `+` meaning 'allow non-fast-forward'. `git fetch origin` is shorthand for the refspec sitting in your config; everything else in remotes is that one pattern applied differently.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/alpha" },
+    { "write": { "path": "alpha.py", "content": "ALPHA = True\n" } },
+    { "commit": { "message": "Add alpha" } },
+    { "run": "git push -q origin feature/alpha" },
+    { "run": "git switch -q -c feature/beta main" },
+    { "write": { "path": "beta.py", "content": "BETA = True\n" } },
+    { "commit": { "message": "Add beta" } },
+    { "run": "git push -q origin feature/beta" },
+    { "run": "git switch -q main" }
+  ],
+  "steps": [
+    {
+      "title": "Read the refspec you already have",
+      "why": "Cloning wrote this line into `.git/config`. It says: fetch every ref under refs/heads on the remote, and store each under refs/remotes/origin. That is why `origin/main` exists and where it comes from.",
+      "commands": ["git config --get remote.origin.fetch", "git config --local --list | cat"],
+      "expect": "+refs/heads/*:refs/remotes/origin/*"
+    },
+    {
+      "title": "Take it apart",
+      "why": "`+` allow non-fast-forward updates. `refs/heads/*` the source pattern on the remote. `refs/remotes/origin/*` where to put each match locally. Three parts, and every remote operation uses them.",
+      "commands": ["git ls-remote origin", "git branch -r"],
+      "expect": "ls-remote shows the server's raw refs; branch -r shows where the refspec filed them."
+    },
+    {
+      "title": "Fetch one branch into a name of your choosing",
+      "why": "A refspec on the command line overrides the configured one. Here the server's feature/alpha lands in a ref called `review/alpha` — useful when reviewing someone's branch without cluttering your remote-tracking namespace.",
+      "commands": ["git fetch origin refs/heads/feature/alpha:refs/heads/review/alpha", "git branch", "git log --oneline review/alpha"],
+      "verify": [
+        { "cmd": "git branch --list review/alpha", "not_empty": true,
+          "label": "the branch was fetched under a different name",
+          "hint": "git fetch origin refs/heads/feature/alpha:refs/heads/review/alpha" }
+      ]
+    },
+    {
+      "title": "Push to a differently-named remote branch",
+      "why": "`src:dst` on push works the same way. Your local `main` can be published as `staging` on the server without renaming anything locally — this is how deploy-by-push setups work.",
+      "commands": ["git push origin main:refs/heads/staging", "git ls-remote --heads origin"],
+      "expect": "A new staging branch on the server pointing at your main.",
+      "verify": [
+        { "cmd": "git ls-remote --heads origin", "contains": "refs/heads/staging",
+          "label": "main was published under a different name",
+          "hint": "git push origin main:refs/heads/staging" }
+      ]
+    },
+    {
+      "title": "Delete by pushing nothing",
+      "why": "An empty source means 'make the destination not exist'. `git push origin --delete x` is a friendlier spelling of `git push origin :x`, and now you can see why the colon form works.",
+      "commands": ["git push origin :refs/heads/staging", "git ls-remote --heads origin"],
+      "verify": [
+        { "cmd": "git ls-remote --heads origin", "not_contains": "refs/heads/staging",
+          "label": "an empty source deleted the remote ref" }
+      ]
+    },
+    {
+      "title": "Narrow the configured refspec",
+      "why": "Replacing the wildcard with a single branch makes every future `git fetch` cheap and quiet — the basis of a single-branch clone. Set it back afterwards, or you will wonder why new branches never appear.",
+      "commands": ["git config remote.origin.fetch +refs/heads/main:refs/remotes/origin/main", "git fetch origin", "git config --get remote.origin.fetch"],
+      "expect": "Only main is fetched from now on."
+    },
+    {
+      "title": "Add a second refspec instead of replacing",
+      "why": "A remote can have several fetch refspecs. `--add` appends one, which is how you fetch pull-request refs from GitHub (`+refs/pull/*/head:refs/remotes/origin/pr/*`) alongside the usual branches.",
+      "commands": ["git config --unset-all remote.origin.fetch", "git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*", "git config --add remote.origin.fetch +refs/tags/*:refs/tags/*", "git fetch origin", "git config --get-all remote.origin.fetch | cat", "git branch -r"],
+      "verify": [
+        { "cmd": "git config --get-all remote.origin.fetch", "lines": 2,
+          "label": "the remote has two fetch refspecs configured",
+          "hint": "git config --add remote.origin.fetch <refspec>" },
+        { "cmd": "git branch -r", "contains": ["origin/feature/alpha", "origin/feature/beta"],
+          "label": "the wildcard refspec is restored and fetching every branch again" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git branch --list review/alpha", "not_empty": true,
+      "label": "you fetched a remote branch into a local name of your choosing",
+      "hint": "git fetch origin refs/heads/feature/alpha:refs/heads/review/alpha" },
+    { "cmd": "git ls-remote --heads origin", "not_contains": "refs/heads/staging",
+      "label": "the branch you published under another name was deleted with an empty-source refspec",
+      "hint": "git push origin :refs/heads/staging" },
+    { "cmd": "git config --get-all remote.origin.fetch", "lines": 2,
+      "label": "two fetch refspecs are configured",
+      "hint": "git config --add remote.origin.fetch +refs/tags/*:refs/tags/*" },
+    { "cmd": "git branch -r", "contains": ["origin/feature/alpha", "origin/feature/beta"],
+      "label": "the wildcard refspec fetches every branch again",
+      "hint": "restore +refs/heads/*:refs/remotes/origin/* after narrowing it" }
+  ],
+  "pitfalls": [
+    "Narrowing `remote.origin.fetch` is what `--single-branch` does. If new branches stop appearing after a clone, this config line is why.",
+    "Without a `+`, a fetch that would move a ref backwards is refused. The plus is what lets remote-tracking refs follow a force-push.",
+    "`git push origin main` uses `push.default` to decide the destination. Writing `main:refs/heads/main` explicitly removes all ambiguity.",
+    "Fetching GitHub pull requests needs `+refs/pull/*/head:refs/remotes/origin/pr/*` — a refspec, not a special feature."
+  ],
+  "cheatsheet": [
+    ["<src>:<dst>", "the refspec shape; + allows non-fast-forward"],
+    ["git config --get remote.origin.fetch", "the refspec you already use every day"],
+    ["git fetch origin <src>:<dst>", "fetch one ref into a name you choose"],
+    ["git push origin <local>:<remote>", "publish under a different name"],
+    ["git push origin :<remote>", "empty source deletes the remote ref"],
+    ["git ls-remote --heads origin", "the server's raw refs, no cache involved"],
+    ["git config --add remote.origin.fetch <spec>", "fetch more, such as PR refs"]
+  ]
+}

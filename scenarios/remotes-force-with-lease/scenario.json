@@ -1,0 +1,124 @@
+{
+  "id": "remotes-force-with-lease",
+  "title": "Force push without deleting your colleague's commit",
+  "category": "remotes",
+  "level": "advanced",
+  "order": 4,
+  "duration_min": 14,
+  "summary": "You rebased a pushed branch, so you must force. Do it the reckless way and destroy a commit; do it with --force-with-lease and watch git refuse to.",
+  "concepts": ["--force", "--force-with-lease", "--force-if-includes", "rebase then push", "recovering from a bad force push"],
+  "mental_model": "`--force` says 'make the server's branch equal mine, whatever it currently is'. `--force-with-lease` says 'make it equal mine, but only if it still equals what I last saw'. The second is a compare-and-swap; the first is a blind write.",
+  "danger": "A plain `--force` on a shared branch permanently deletes commits from the server's history. They survive only in the reflog of whoever pushed them.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/api" },
+    { "write": { "path": "api.py", "content": "def get():\n    return {}\n" } },
+    { "commit": { "message": "wip api" } },
+    { "run": "git push -q -u origin feature/api" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "run": "git switch -q -c feature/api origin/feature/api" },
+    { "cwd": "teammate", "as": "teammate", "write": { "path": "api.py", "content": "def get():\n    return {}\n\n\ndef post(body):\n    return body\n" } },
+    { "cwd": "teammate", "as": "teammate", "commit": { "message": "Add POST handler" } },
+    { "cwd": "teammate", "run": "git push -q origin feature/api" },
+    { "write": { "path": "api.py", "content": "def get():\n    \"\"\"Return the tank state.\"\"\"\n    return {}\n" } },
+    { "run": "git commit -q -a --amend -m \"Add API GET handler with docstring\"" }
+  ],
+  "steps": [
+    {
+      "title": "See the situation you are in",
+      "why": "You amended a commit that was already pushed, so your branch and the server's have diverged. Meanwhile your colleague pushed a commit on top of the original — which you have not fetched and do not know about.",
+      "commands": ["git log --oneline --graph --all --decorate", "git status -sb"],
+      "expect": "Your amended commit locally; origin/feature/api still at the old one you pushed."
+    },
+    {
+      "title": "A normal push is rejected, correctly",
+      "why": "Non-fast-forward. Git is telling you the server has something your branch does not contain — in this case both the original commit and your colleague's work.",
+      "run": "git push",
+      "expect": "! [rejected] ... (non-fast-forward). Exit code 1."
+    },
+    {
+      "title": "Try the safe force — and get refused",
+      "why": "`--force-with-lease` compares the server's current tip with your remote-tracking ref. They differ, because your colleague pushed. Git refuses, and that refusal has just saved their commit.",
+      "run": "git push --force-with-lease",
+      "expect": "! [rejected] ... (stale info). This is the feature working.",
+      "verify": [
+        { "cmd": "git log --oneline origin/feature/api", "not_contains": "POST handler",
+          "label": "your cached view of the branch is stale — it has no idea their commit exists" }
+      ]
+    },
+    {
+      "title": "Do what the refusal is asking",
+      "why": "Fetch, look at what arrived, and decide. The lease did not stop you working — it stopped you working blind.",
+      "commands": ["git fetch origin", "git log --oneline --graph --all --decorate", "git log --oneline HEAD..origin/feature/api"],
+      "expect": "Their POST handler commit appears, sitting on the original version of your commit.",
+      "verify": [
+        { "cmd": "git log --oneline origin/feature/api", "contains": "Add POST handler",
+          "label": "you can now see the commit you were about to destroy" }
+      ]
+    },
+    {
+      "title": "Rebase their work onto your amended commit",
+      "why": "Their commit belongs on top of your improved version. `--onto` moves just their commit across, and now your branch contains everything — no force needed to be destructive, only to be a rewrite.",
+      "commands": ["sh -c 'git rebase --onto HEAD $(git rev-parse origin/feature/api~1) origin/feature/api'", "git log --oneline --graph", "cat api.py"],
+      "expect": "Detached HEAD with both commits — yours amended, theirs replayed on top."
+    },
+    {
+      "title": "Move your branch to the combined result",
+      "why": "The rebase left you detached; pointing feature/api at this commit makes it the branch tip. Now the branch is a strict superset of what the server has, plus your rewrite.",
+      "commands": ["sh -c 'git branch -f feature/api HEAD'", "git switch feature/api", "git log --oneline", "cat api.py"],
+      "verify": [
+        { "cmd": "git log --oneline feature/api", "contains": ["Add POST handler", "docstring"],
+          "label": "your branch now has both your amended commit and their work",
+          "hint": "rebase their commit onto yours before forcing" }
+      ]
+    },
+    {
+      "title": "Now force safely",
+      "why": "The lease compares against your remote-tracking ref, which you refreshed with the fetch. It matches, so the push goes through — rewriting your commit while preserving theirs.",
+      "commands": ["git push --force-with-lease", "git log --oneline origin/feature/api", "git status -sb"],
+      "verify": [
+        { "cmd": "git log --oneline main", "not_empty": true, "label": "push completed" }
+      ]
+    },
+    {
+      "title": "Check the server",
+      "why": "The bare repository is the source of truth. Both commits are there, and nobody's work was deleted — which is the entire point of the extra six characters in the flag.",
+      "cwd": "origin",
+      "commands": ["git log --oneline feature/api"],
+      "expect": "Two commits: your amended one, and theirs."
+    }
+  ],
+  "verify": [
+    { "cmd": "git log --oneline feature/api", "cwd": "origin",
+      "contains": ["Add POST handler", "docstring"],
+      "label": "the server has both your rewrite and your colleague's commit",
+      "hint": "fetch, rebase their commit onto yours, then --force-with-lease" },
+    { "cmd": "git log --oneline feature/api", "cwd": "origin", "lines": 3,
+      "label": "three commits total — nothing lost, nothing duplicated",
+      "hint": "a plain --force here would have left only two, deleting their work" },
+    { "cmd": "git show feature/api:api.py", "cwd": "origin",
+      "contains": ["Return the tank state", "def post"],
+      "label": "the file on the server contains your rewrite and their addition",
+      "hint": "the rebase replayed their commit on top of your amended one" },
+    { "cmd": "git status -sb", "not_contains": "ahead",
+      "label": "your branch matches the server" }
+  ],
+  "pitfalls": [
+    "`--force-with-lease` is only meaningful if you have not just fetched. Fetching refreshes the lease, so `git fetch && git push --force-with-lease` is nearly as blind as `--force`. Fetch, LOOK, then push.",
+    "`--force-if-includes` (git 2.30+) closes that gap: it also requires that your branch actually contains what you fetched.",
+    "Never force-push a branch other people build on without telling them. Their next pull will be a mess regardless of which flag you used.",
+    "If someone force-pushes over your commit, it is still in your local reflog. Push it back before your reflog expires."
+  ],
+  "cheatsheet": [
+    ["git push --force-with-lease", "force, but only if the server matches what you last saw"],
+    ["git push --force-with-lease --force-if-includes", "…and only if you have integrated it"],
+    ["git push --force", "blind overwrite — avoid on shared branches"],
+    ["git fetch && git log HEAD..origin/<branch>", "what you are about to overwrite"],
+    ["git rebase --onto HEAD <their-parent> <their-branch>", "replay their work onto your rewrite"],
+    ["git branch -f <branch> <sha>", "move a branch pointer explicitly"],
+    ["git reflog", "recover commits lost to someone else's force push"]
+  ]
+}

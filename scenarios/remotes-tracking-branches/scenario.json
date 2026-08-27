@@ -1,0 +1,120 @@
+{
+  "id": "remotes-tracking-branches",
+  "title": "\"There is no tracking information for the current branch\"",
+  "category": "remotes",
+  "level": "beginner",
+  "order": 2,
+  "duration_min": 12,
+  "summary": "Set up the link between a local branch and its remote counterpart, understand what ahead/behind actually counts, and stop typing the remote and branch name every time.",
+  "concepts": ["upstream", "push -u", "remote-tracking branch", "status -sb", "push.autoSetupRemote"],
+  "mental_model": "Three different things share the word 'branch': your local `main`, the server's `main`, and `origin/main` — your cached snapshot of the server's. Tracking is a config line saying which remote branch your local one is paired with.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('reef')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/lighting" },
+    { "write": { "path": "lights.py", "content": "SCHEDULE = '08:00-20:00'\n" } },
+    { "commit": { "message": "Add lighting schedule" } }
+  ],
+  "steps": [
+    {
+      "title": "See who has an upstream and who does not",
+      "why": "main was pushed with `-u` during setup, so it has one. feature/lighting was created locally and has never met the server — it has no upstream at all.",
+      "commands": ["git branch -vv", "git status -sb"],
+      "expect": "main shows [origin/main]; feature/lighting shows nothing in brackets."
+    },
+    {
+      "title": "Watch a bare push fail",
+      "why": "Git will not guess where to send a branch it has never seen. The error message is long because it is offering you the fix — but it will not act without being told.",
+      "run": "git push",
+      "expect": "fatal: The current branch feature/lighting has no upstream branch. Exit code 1."
+    },
+    {
+      "title": "Push and set the upstream in one go",
+      "why": "`-u` (short for `--set-upstream`) pushes and records the pairing in `.git/config`. From now on, bare `git push` and `git pull` know what you mean on this branch.",
+      "commands": ["git push -u origin feature/lighting", "git branch -vv", "git config --get branch.feature/lighting.merge"],
+      "verify": [
+        { "cmd": "git config --get branch.feature/lighting.remote", "equals": "origin",
+          "label": "the branch tracks origin", "hint": "git push -u origin feature/lighting" },
+        { "cmd": "git config --get branch.feature/lighting.merge", "contains": "feature/lighting",
+          "label": "…and knows which remote branch it pairs with" }
+      ]
+    },
+    {
+      "title": "Now bare push and pull work",
+      "why": "The tracking config is what makes the short commands unambiguous. Nothing magical happened — two lines were written into `.git/config`.",
+      "actions": [
+        { "write": { "path": "lights.py", "content": "SCHEDULE = '07:30-21:00'\n" } },
+        { "run": "git commit -q -a -m \"Widen the lighting window\"" }
+      ],
+      "commands": ["git status -sb", "git push", "git status -sb"],
+      "expect": "ahead 1 before the push, in sync after it."
+    },
+    {
+      "title": "Understand what ahead and behind count",
+      "why": "`ahead 1` means one commit you have that origin/main does not — as of your last fetch. It is a comparison against your cached copy, not a live query, which is why a stale clone can confidently report 'up to date' while being weeks behind.",
+      "actions": [
+        { "cwd": "origin", "run": "git symbolic-ref HEAD refs/heads/main" },
+        { "clone_teammate": true },
+        { "cwd": "teammate", "as": "teammate", "write": { "path": "app.py", "content": "print('reef v2')\n" } },
+        { "cwd": "teammate", "as": "teammate", "commit": { "message": "Teammate updates the app" } },
+        { "cwd": "teammate", "run": "git push -q origin main" }
+      ],
+      "commands": ["git switch main", "git status -sb", "git fetch", "git status -sb"],
+      "expect": "'up to date' before the fetch, 'behind 1' after it. Nothing changed on the server in between — only your knowledge of it."
+    },
+    {
+      "title": "Point a branch at a differently-named remote branch",
+      "why": "Tracking does not require matching names. `--set-upstream-to` links any local branch to any remote one, which is how you work on `fix/thing` locally while the server calls it `renovate/thing`.",
+      "commands": ["git switch feature/lighting", "git branch --set-upstream-to=origin/main temp-check", "git branch -vv"],
+      "expect": "Fails — temp-check does not exist. Read the error, it is precise.",
+      "cwd": "repo"
+    },
+    {
+      "title": "Stop needing -u at all",
+      "why": "`push.autoSetupRemote true` makes a bare `git push` on a new branch create the remote branch and set the upstream automatically. It removes the single most common friction point in daily git.",
+      "actions": [
+        { "run": "git config --global push.autoSetupRemote true" },
+        { "run": "git switch -q -c feature/alerts" },
+        { "write": { "path": "alerts.py", "content": "THRESHOLD = 29.0\n" } },
+        { "run": "git add -A" },
+        { "run": "git commit -q -m \"Add alerts\"" }
+      ],
+      "commands": ["git push", "git branch -vv"],
+      "expect": "A brand-new branch pushed with no flags at all.",
+      "verify": [
+        { "cmd": "git config --get branch.feature/alerts.remote", "equals": "origin",
+          "label": "the new branch got an upstream without -u",
+          "hint": "git config --global push.autoSetupRemote true" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git config --get branch.feature/lighting.remote", "equals": "origin",
+      "label": "feature/lighting tracks origin",
+      "hint": "git push -u origin feature/lighting" },
+    { "cmd": "git config --get branch.feature/alerts.remote", "equals": "origin",
+      "label": "feature/alerts got its upstream automatically",
+      "hint": "git config --global push.autoSetupRemote true, then git push" },
+    { "cmd": "git config --global --get push.autoSetupRemote", "equals": "true",
+      "label": "the config that makes -u unnecessary is set" },
+    { "cmd": "git branch -r", "contains": ["origin/feature/lighting", "origin/feature/alerts"],
+      "label": "both branches exist on the server" }
+  ],
+  "pitfalls": [
+    "`git status` reporting 'up to date' only means 'up to date with what I last fetched'. Fetch first, then believe it.",
+    "Deleting a local branch does not delete the remote one, and vice versa. They are separate objects joined only by a config line.",
+    "`git branch -vv` showing `[origin/x: gone]` means the remote branch was deleted — run `git fetch --prune` and clean up the local one.",
+    "`push.default simple` refuses to push a branch to a differently-named remote branch by accident. Keep it on."
+  ],
+  "cheatsheet": [
+    ["git push -u origin <branch>", "push and record the upstream"],
+    ["git branch -vv", "every branch, its upstream, ahead/behind"],
+    ["git status -sb", "one-line ahead/behind for the current branch"],
+    ["git branch --set-upstream-to=origin/<b>", "link an existing branch"],
+    ["git branch --unset-upstream", "break the link"],
+    ["git config --global push.autoSetupRemote true", "never type -u again"],
+    ["git fetch", "refresh what ahead/behind is measured against"]
+  ]
+}

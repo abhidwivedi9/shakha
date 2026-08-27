@@ -1,0 +1,123 @@
+{
+  "id": "remotes-delete-remote-branch",
+  "title": "Delete a branch on the server (and put it back)",
+  "category": "remotes",
+  "level": "beginner",
+  "order": 6,
+  "duration_min": 10,
+  "summary": "Local and remote branches are separate things. Delete one on the server, see what that does and does not affect, then restore it from a clone that still has it.",
+  "concepts": ["push --delete", "push :branch refspec", "local vs remote deletion", "restoring a deleted remote branch"],
+  "mental_model": "`git push origin --delete x` means 'push nothing to the ref named x', which deletes it. The old spelling `git push origin :x` says the same thing literally: empty source, destination x.",
+  "danger": "Deleting a branch on a server that has no other copy can strand its commits. On GitHub they are recoverable for a while; on a bare repo you control, they are gone once garbage collection runs.",
+  "setup": [
+    { "run": "git init -q -b main" },
+    { "write": { "path": "app.py", "content": "print('v1')\n" } },
+    { "commit": { "message": "Initial commit" } },
+    { "init_origin": true, "push_branch": "main" },
+    { "run": "git switch -q -c feature/shipped" },
+    { "write": { "path": "shipped.py", "content": "SHIPPED = True\n" } },
+    { "commit": { "message": "Ship the feature" } },
+    { "run": "git push -q -u origin feature/shipped" },
+    { "run": "git switch -q -c feature/oops main" },
+    { "write": { "path": "oops.py", "content": "SECRET_DRAFT = 'not meant to be public'\n" } },
+    { "commit": { "message": "Draft that should not have been pushed" } },
+    { "run": "git push -q -u origin feature/oops" },
+    { "clone_teammate": true },
+    { "cwd": "teammate", "run": "git switch -q -c feature/oops origin/feature/oops" },
+    { "run": "git switch -q main" },
+    { "run": "git merge -q --no-ff -m \"Merge shipped feature\" feature/shipped" },
+    { "run": "git push -q origin main" }
+  ],
+  "steps": [
+    {
+      "title": "See what exists where",
+      "why": "Three branches on the server, three locally, and a teammate clone that also has one of them. Deletion affects exactly one of these copies at a time.",
+      "commands": ["git branch", "git branch -r", "git remote -v"]
+    },
+    {
+      "title": "Delete the merged branch on the server",
+      "why": "`--delete` removes the branch from origin. Your local branch still exists — the two are separate refs joined only by tracking config.",
+      "commands": ["git push origin --delete feature/shipped", "git branch -r", "git branch"],
+      "expect": "Gone from origin, still present locally.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": "feature/shipped",
+          "label": "the branch is gone from the server",
+          "hint": "git push origin --delete feature/shipped" },
+        { "cmd": "git branch --list feature/shipped", "not_empty": true,
+          "label": "…and still present locally, untouched" }
+      ]
+    },
+    {
+      "title": "Clean up your local copy too",
+      "why": "`-d` accepts it because the work is merged into main. Deleting the remote branch never deletes your local one; you always do both.",
+      "commands": ["git branch -d feature/shipped", "git branch", "git branch -vv"],
+      "verify": [
+        { "cmd": "git branch --list feature/shipped", "empty": true,
+          "label": "the local branch is cleaned up too" }
+      ]
+    },
+    {
+      "title": "Delete the draft that should not be public",
+      "why": "Same command, different motive. Note what it does NOT do: the commit is still in the server's object database until it is garbage-collected, and it is still in the teammate's clone.",
+      "commands": ["git push origin --delete feature/oops", "git branch -r"],
+      "expect": "Gone from the listing.",
+      "verify": [
+        { "cmd": "git branch -r", "not_contains": "feature/oops",
+          "label": "the draft branch is gone from the server" }
+      ]
+    },
+    {
+      "title": "Prove deletion is not erasure",
+      "why": "The teammate's clone still has the branch and every commit on it. This is the crucial point about anything sensitive: deleting a remote branch is not a security measure — it is tidying.",
+      "cwd": "teammate",
+      "commands": ["git log --oneline feature/oops", "git show feature/oops:oops.py"],
+      "expect": "The draft, still fully readable in the clone."
+    },
+    {
+      "title": "Restore the branch from that clone",
+      "why": "Any clone holding the commits can push the branch back. This is the recovery route when someone deletes a branch that was not finished — no server-side undo required.",
+      "cwd": "teammate",
+      "commands": ["git push origin feature/oops", "git branch -r"],
+      "verify": [
+        { "cmd": "git branch -r", "cwd": "teammate", "contains": "feature/oops",
+          "label": "the branch is back on the server",
+          "hint": "push it from any clone that still has the commits" }
+      ]
+    },
+    {
+      "title": "Update your own view",
+      "why": "Your clone knows nothing about the restoration until you fetch. Deleting, restoring and pruning all operate on different copies — which is the entire lesson of this scenario.",
+      "commands": ["git fetch origin", "git branch -r", "git log --oneline origin/feature/oops"],
+      "verify": [
+        { "cmd": "git branch -r", "contains": "feature/oops",
+          "label": "your clone sees the restored branch after a fetch" }
+      ]
+    }
+  ],
+  "verify": [
+    { "cmd": "git branch -r", "not_contains": "feature/shipped",
+      "label": "the merged branch was deleted on the server",
+      "hint": "git push origin --delete feature/shipped" },
+    { "cmd": "git branch --list feature/shipped", "empty": true,
+      "label": "and locally too — they are two separate deletions" },
+    { "cmd": "git branch -r", "contains": "feature/oops",
+      "label": "the draft branch was restored from a clone that still had it",
+      "hint": "push it back from the teammate clone, then fetch" },
+    { "cmd": "git show feature/oops:oops.py", "cwd": "origin", "contains": "SECRET_DRAFT",
+      "label": "the restored branch has its original content" }
+  ],
+  "pitfalls": [
+    "`git branch -d` deletes locally only. `git push origin --delete` deletes remotely only. Nothing does both, and forgetting the second is why servers accumulate hundreds of branches.",
+    "Deleting a branch containing a leaked secret does not remove the secret. The commit stays in the object database, in every clone, and in any CI cache. Rotate the credential.",
+    "The old `git push origin :branch` syntax still works and appears in older documentation. It is the same operation.",
+    "If the server has branch protection, deletion is refused — which is a feature, not a bug, on main."
+  ],
+  "cheatsheet": [
+    ["git push origin --delete <branch>", "delete a branch on the server"],
+    ["git push origin :<branch>", "the older spelling of the same thing"],
+    ["git branch -d <branch>", "delete your local copy"],
+    ["git push origin <branch>", "recreate it from a clone that still has it"],
+    ["git fetch --prune", "sync your view after someone else deletes one"],
+    ["git branch -r", "what the server had, as of your last fetch"]
+  ]
+}
